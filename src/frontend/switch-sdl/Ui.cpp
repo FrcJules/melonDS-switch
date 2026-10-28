@@ -116,19 +116,30 @@ int TextWidth(const std::string& text, FontSize size)
     return w;
 }
 
+static std::map<std::string, std::string> EllipsizeCache;
+
 static std::string Ellipsize(const std::string& text, FontSize size, int maxWidth)
 {
-    if (maxWidth <= 0 || TextWidth(text, size) <= maxWidth) return text;
+    if (maxWidth <= 0) return text;
+    // cut texts are cached: lists redraw the same long names every frame
+    std::string key = std::to_string((int)size) + "/" + std::to_string(maxWidth) + "/" + text;
+    auto it = EllipsizeCache.find(key);
+    if (it != EllipsizeCache.end()) return it->second;
+    if (EllipsizeCache.size() > 500) EllipsizeCache.clear();
     std::string s = text;
-    while (!s.empty())
+    if (TextWidth(text, size) > maxWidth)
     {
-        // drop one UTF-8 character
-        size_t i = s.size() - 1;
-        while (i > 0 && (s[i] & 0xC0) == 0x80) i--;
-        s.erase(i);
-        if (TextWidth(s + "...", size) <= maxWidth) return s + "...";
+        for (;;)
+        {
+            if (s.empty()) break;
+            // drop one UTF-8 character
+            size_t i = s.size() - 1;
+            while (i > 0 && (s[i] & 0xC0) == 0x80) i--;
+            s.erase(i);
+            if (TextWidth(s + "...", size) <= maxWidth) { s += "..."; break; }
+        }
     }
-    return "";
+    return EllipsizeCache[key] = s;
 }
 
 static const GfxTex* RunTexture(const Run& r, FontSize size, SDL_Color c)
