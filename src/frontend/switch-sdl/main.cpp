@@ -22,7 +22,7 @@
 //   audiointerp=0..4 (none, linear, cosine, cubic, gaussian; default 3)   autosave=0|1   autoload=1|0 (default on)   loadslot=0..4 (state loaded at start)   jitblock=1..256 (default 32) jitliteral=0|1 jitbranch=0|1   itercycles=16..512 (main-loop step, default 128; melonDS uses 64)   audioctl=0|1   audioskew=<ratio>   audiodump=<seconds>   sampler=<seconds> (sampling profiler, samples.bin)
 // Save states (next to the config, named after the ROM: <rom>.ss<slot>, slot 0 = automatic):
 //   hold ZL + ZR, then X = save, Y = load, left/right = choose slot 1..4 (squares on the left show the slot, colour = result).
-// Screens (Layout.h): hold ZL + ZR, then up = next layout (vertical, horizontal, hybrid), down = swap the screens; more in
+// Screens (Layout.h): hold ZL + ZR, then up = next layout (vertical, horizontal, hybrid), MINUS = swap the screens; more in
 //   the menu (Affichage). The top screen is shown alone while the bottom one is black (can be turned off).
 //   The state is also saved automatically on exit (slot 0) and loaded at start.
 // Every second a line "t fps avg_ms max_ms" is appended to sdmc:/switch/melonDS-Switch/log.txt.
@@ -1199,9 +1199,10 @@ int main(int argc, char** argv)
                         slot = b == 14 ? std::min(slot + 1, 4) : std::max(slot - 1, 1);
                         feedback(230, 200, 40, slot);
                     }
-                    else if (b == 13 || b == 15)
+                    else if (b == 13 || b == 11)
                     {
-                        // up: next layout, down: swap the screens (hybrid: which one is big)
+                        // up: next layout, MINUS: swap the screens (hybrid: which one is big). Not down: ZL + ZR + down
+                        // opens the Tesla/Ultrahand overlay menu on many consoles
                         if (b == 13) disp.Layout = (disp.Layout + 1) % 3;
                         else disp.Swap = !disp.Swap;
                         computeLayout();
