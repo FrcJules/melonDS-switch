@@ -67,6 +67,10 @@ Besides the frontend: geometry and JIT speed-ups (output identical, checked with
 GLES 3 path for the OpenGL renderer, and `NDSCart/CartRetailIR.cpp`: the IR cartridge returned an uninitialised value
 for IR commands that are not emulated (also fixed upstream in pending PR #2727).
 
+## Contact
+FrcJules: Discord `rateur42`, e-mail rateur42@gmail.com. Bug reports: GitHub issues of this repository.
+For this port only: please do not contact the melonDS team about it.
+
 ## License
 GPL-3.0-or-later, like melonDS. melonDS © the melonDS team (Arisotura, RSDuck and contributors); icon based on the
 melonDS icon by limittox. Third-party libraries linked into the `.nro`: see `THIRD-PARTY-NOTICES.md`.
