@@ -8,6 +8,9 @@ set(SWITCH_APP_VERSION "0.2.0" CACHE STRING "Version shown in hbmenu and in the 
 
 add_executable(melonDS-switch
     main.cpp
+    Gfx.cpp
+    Layout.cpp
+    ../ScreenLayout.cpp
     Platform.cpp
 )
 target_compile_definitions(melonDS-switch PRIVATE SWITCH_APP_VERSION="${SWITCH_APP_VERSION}")
