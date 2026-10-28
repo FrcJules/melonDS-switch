@@ -12,6 +12,26 @@ add_executable(melonDS-switch
 )
 target_compile_definitions(melonDS-switch PRIVATE SWITCH_APP_VERSION="${SWITCH_APP_VERSION}")
 
+# deko3d presentation (render=deko3d in config.txt): shaders compiled by uam at build time, embedded in the binary
+option(SWITCH_DEKO3D "Build the deko3d presentation path" ON)
+if (SWITCH_DEKO3D)
+    find_program(UAM uam HINTS $ENV{DEVKITPRO}/tools/bin REQUIRED)
+    set(DK_SRC ${CMAKE_CURRENT_SOURCE_DIR}/deko3d)
+    set(DK_OUT ${CMAKE_CURRENT_BINARY_DIR}/deko3d)
+    add_custom_command(OUTPUT ${DK_OUT}/gfx_shaders.h
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${DK_OUT}
+        COMMAND ${UAM} -s vert -o ${DK_OUT}/gfx_vsh.dksh ${DK_SRC}/gfx_vsh.glsl
+        COMMAND ${UAM} -s frag -o ${DK_OUT}/gfx_fsh.dksh ${DK_SRC}/gfx_fsh.glsl
+        COMMAND ${CMAKE_COMMAND} -DOUT=${DK_OUT}/gfx_shaders.h -DINPUTS=GfxVshDksh=${DK_OUT}/gfx_vsh.dksh|GfxFshDksh=${DK_OUT}/gfx_fsh.dksh -P ${DK_SRC}/EmbedDksh.cmake
+        DEPENDS ${DK_SRC}/gfx_vsh.glsl ${DK_SRC}/gfx_fsh.glsl ${DK_SRC}/EmbedDksh.cmake
+        COMMENT "Compiling deko3d shaders (uam)"
+        VERBATIM)
+    target_sources(melonDS-switch PRIVATE deko3d/GfxDeko.cpp ${DK_OUT}/gfx_shaders.h)
+    target_include_directories(melonDS-switch PRIVATE ${DK_OUT})
+    target_compile_definitions(melonDS-switch PRIVATE SWITCH_DEKO3D)
+    target_link_libraries(melonDS-switch PRIVATE deko3d)
+endif()
+
 # timing profilers (prof=/glprof= columns of the log); they read the system counter in the hot loops
 option(SWITCH_PROFILE "Build the emulation-loop and GL profilers (MELONDS_PROF, MELONDS_GL_PROFILE)" ON)
 

@@ -64,6 +64,9 @@
 #include "Platform.h"
 #include "Prof.h"
 #include "Savestate.h"
+#ifdef SWITCH_DEKO3D
+#include "deko3d/GfxDeko.h"
+#endif
 
 using namespace melonDS;
 
@@ -220,7 +223,23 @@ extern "C" void glColorMaskiOES(GLuint index, GLboolean r, GLboolean g, GLboolea
 }
 
 // ---- drawing: everything goes through one GLES 3 context (SDL window + EGL), so that the GPU renderer and the UI share it ----
-struct GfxTex { GLuint Id = 0; int W = 0, H = 0; };
+struct GfxTex { GLuint Id = 0; int W = 0, H = 0; };   // deko3d: Id = texture id + 1
+
+// presentation through deko3d instead of GLES 3 (render=deko3d): chosen at start, no GL context exists then
+#ifdef SWITCH_DEKO3D
+static bool GfxDk = false;
+#else
+static constexpr bool GfxDk = false;
+static bool DkGfxInit(const std::function<void(const std::string&)>&) { return false; }
+static void DkGfxShutdown() {}
+static int DkTexCreate(int, int, bool) { return -1; }
+static void DkTexSetLinear(int, bool) {}
+static void DkTexUpload(int, int, int, int, int, const void*, int) {}
+static void DkTexDestroy(int) {}
+static void DkClear() {}
+static void DkDraw(const float*, const float*, const float*, int, int, bool) {}
+static void DkPresent() {}
+#endif
 
 struct Gfx
 {
@@ -309,6 +328,7 @@ static GLuint GfxLink(const char* vs, const char* fs, const std::function<void(c
 
 static bool GfxInit(Gfx* g, const std::function<void(const std::string&)>& say)
 {
+    if (GfxDk) return DkGfxInit(say);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
@@ -336,6 +356,7 @@ static bool GfxInit(Gfx* g, const std::function<void(const std::string&)>& say)
 
 static void GfxResetState(Gfx* g)
 {
+    if (GfxDk) return;
     // the GPU renderer leaves its own state behind
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, 1280, 720);
@@ -351,6 +372,7 @@ static void GfxResetState(Gfx* g)
 
 static void GfxClear(Gfx* g)
 {
+    if (GfxDk) { DkClear(); return; }
     GfxResetState(g);
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -361,12 +383,19 @@ static void GfxColor(Gfx* g, int r, int gr, int b, int a) { g->R = r / 255.f; g-
 static void GfxBlendMode(Gfx* g, bool on)
 {
     g->Blend = on;
+    if (GfxDk) return;
     if (on) { glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); }
     else glDisable(GL_BLEND);
 }
 
 static void GfxFill(Gfx* g, const SDL_Rect* r)
 {
+    if (GfxDk)
+    {
+        float rect[4] {(float)r->x, (float)r->y, (float)r->w, (float)r->h}, uv[4] {0, 0, 1, 1}, col[4] {g->R, g->G, g->B, g->A};
+        DkDraw(rect, uv, col, 0, -1, g->Blend);
+        return;
+    }
     glUseProgram(g->Prog);
     glUniform4f(g->ULoc[0][0], (float)r->x, (float)r->y, (float)r->w, (float)r->h);
     glUniform4f(g->ULoc[0][1], 0, 0, 1, 1);
@@ -380,6 +409,12 @@ static void GfxCopy(Gfx* g, const GfxTex* t, const SDL_Rect* src, const SDL_Rect
 {
     float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
     if (src) { u0 = (float)src->x / t->W; v0 = (float)src->y / t->H; u1 = (float)(src->x + src->w) / t->W; v1 = (float)(src->y + src->h) / t->H; }
+    if (GfxDk)
+    {
+        float rect[4] {(float)dst->x, (float)dst->y, (float)dst->w, (float)dst->h}, uv[4] {u0, v0, u1, v1}, col[4] {g->R, g->G, g->B, g->A};
+        DkDraw(rect, uv, col, mode, (int)t->Id - 1, g->Blend);
+        return;
+    }
     glUseProgram(g->Prog);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, t->Id);
@@ -407,6 +442,7 @@ static void GfxCopyArray(Gfx* g, GLuint tex, int layer, const SDL_Rect* dst, boo
 
 static void GfxTexParams(const GfxTex* t, bool linear)
 {
+    if (GfxDk) { DkTexSetLinear((int)t->Id - 1, linear); return; }
     glBindTexture(GL_TEXTURE_2D, t->Id);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, linear ? GL_LINEAR : GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, linear ? GL_LINEAR : GL_NEAREST);
@@ -418,6 +454,7 @@ static GfxTex GfxTexCreate(int w, int h, bool linear)
 {
     GfxTex t;
     t.W = w; t.H = h;
+    if (GfxDk) { t.Id = (GLuint)(DkTexCreate(w, h, linear) + 1); return t; }
     glGenTextures(1, &t.Id);
     glBindTexture(GL_TEXTURE_2D, t.Id);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
@@ -427,7 +464,7 @@ static GfxTex GfxTexCreate(int w, int h, bool linear)
 
 static void GfxTexDestroy(GfxTex* t)
 {
-    if (t->Id) glDeleteTextures(1, &t->Id);
+    if (t->Id) { if (GfxDk) DkTexDestroy((int)t->Id - 1); else glDeleteTextures(1, &t->Id); }
     *t = GfxTex();
 }
 
@@ -438,6 +475,14 @@ static GfxTex GfxTexFromSurface(SDL_Surface* surf)
     SDL_Surface* rgba = SDL_ConvertSurfaceFormat(surf, SDL_PIXELFORMAT_ABGR8888, 0);   // bytes R,G,B,A
     if (!rgba) return t;
     t.W = rgba->w; t.H = rgba->h;
+    if (GfxDk)
+    {
+        int id = DkTexCreate(t.W, t.H, true);
+        if (id >= 0) DkTexUpload(id, 0, 0, t.W, t.H, rgba->pixels, rgba->pitch);
+        t.Id = (GLuint)(id + 1);
+        SDL_FreeSurface(rgba);
+        return t;
+    }
     glGenTextures(1, &t.Id);
     glBindTexture(GL_TEXTURE_2D, t.Id);
     glPixelStorei(GL_UNPACK_ROW_LENGTH, rgba->pitch / 4);
@@ -448,7 +493,20 @@ static GfxTex GfxTexFromSurface(SDL_Surface* surf)
     return t;
 }
 
-static void GfxPresent(Gfx* g) { SDL_GL_SwapWindow(g->Window); }
+// part of a texture, RGBA8 rows of w texels
+static void GfxTexUpload(const GfxTex* t, int x, int y, int w, int h, const void* pixels)
+{
+    if (!t->Id) return;
+    if (GfxDk) { DkTexUpload((int)t->Id - 1, x, y, w, h, pixels, w * 4); return; }
+    glBindTexture(GL_TEXTURE_2D, t->Id);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+}
+
+static void GfxPresent(Gfx* g)
+{
+    if (GfxDk) DkPresent();
+    else SDL_GL_SwapWindow(g->Window);
+}
 
 // ---- minimal UI: text with the console's shared font, ROM browser ----
 static TTF_Font* UIFont = nullptr;
@@ -759,6 +817,10 @@ int main(int argc, char** argv)
 
     memlog("before SDL");
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK);
+#ifdef SWITCH_DEKO3D
+    GfxDk = cfg.count("render") && cfg["render"] == "deko3d";
+    logf("presentation: %s\n", GfxDk ? "deko3d" : "GLES 3 (Mesa)");
+#endif
     Gfx gfx;
     if (!GfxInit(&gfx, [&](const std::string& m) { logf("%s\n", m.c_str()); }))
     {
@@ -953,6 +1015,11 @@ int main(int argc, char** argv)
 
     // 3D renderer: software (optionally on its own thread: 3 cores are available to homebrew) or GLES 3 on the GPU
     auto applyRenderer = [&](bool gpu) -> bool {
+        if (gpu && GfxDk)
+        {
+            logf("GPU renderer (GLES 3) unavailable with the deko3d presentation\n");
+            return false;
+        }
 #ifdef OGLRENDERER_ENABLED
         if (gpu)
         {
@@ -1470,9 +1537,8 @@ int main(int argc, char** argv)
         GfxClear(renderer);
         if (softFrame)
         {
-            glBindTexture(GL_TEXTURE_2D, tex.Id);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 192, GL_RGBA, GL_UNSIGNED_BYTE, top);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 192, 256, 192, GL_RGBA, GL_UNSIGNED_BYTE, bottom);
+            GfxTexUpload(&tex, 0, 0, 256, 192, top);
+            GfxTexUpload(&tex, 0, 192, 256, 192, bottom);
             gpuTex = 0;
         }
         else if (top)
@@ -1727,9 +1793,10 @@ enum { ProfARM9, ProfARM7, ProfEvtLCD, ProfEvtSPU, ProfEvtOther, ProfCompile, Pr
     logf("exit step 2\n");
     GfxTexDestroy(&tex);
     logf("exit step 3\n");
-    SDL_GL_DeleteContext(gfx.Context);
+    if (GfxDk) DkGfxShutdown();
+    if (gfx.Context) SDL_GL_DeleteContext(gfx.Context);
     logf("exit step 4\n");
-    SDL_DestroyWindow(gfx.Window);
+    if (gfx.Window) SDL_DestroyWindow(gfx.Window);
     logf("exit step 5\n");
     SDL_Quit();
     logf("exit step 6\n");
