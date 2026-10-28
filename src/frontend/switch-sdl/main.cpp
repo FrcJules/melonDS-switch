@@ -59,6 +59,9 @@
 #include "Args.h"
 #include "Gfx.h"
 #include "Layout.h"
+#include "RomInfo.h"
+#include "Ui.h"
+#include "UiHome.h"
 #include "NDS.h"
 #include "NDSCart.h"
 #ifdef OGLRENDERER_ENABLED
@@ -247,114 +250,6 @@ static std::string LowerCase(std::string s)
     for (auto& c : s) c = (char)tolower((unsigned char)c);
     return s;
 }
-
-// returns the chosen .nds path, or "" if the user quit (PLUS)
-static std::string BrowseRom(Gfx* r, std::string dir)
-{
-    struct Entry { std::string name; bool isDir; };
-    std::vector<Entry> entries;
-    int sel = 0, top = 0;
-    const int rows = 14;
-
-    auto join = [](const std::string& d, const std::string& n) { return d.back() == '/' ? d + n : d + "/" + n; };
-    auto load = [&]() {
-        entries.clear();
-        if (dir.size() > 6) entries.push_back({"..", true});
-        if (DIR* d = opendir(dir.c_str()))
-        {
-            std::vector<Entry> dirs, files;
-            while (dirent* e = readdir(d))
-            {
-                std::string n = e->d_name;
-                if (n.empty() || n[0] == '.') continue;
-                struct stat st;
-                bool isDir = e->d_type == DT_DIR || (stat(join(dir, n).c_str(), &st) == 0 && S_ISDIR(st.st_mode));
-                if (isDir) dirs.push_back({n, true});
-                else
-                {
-                    std::string l = LowerCase(n);
-                    if (l.size() > 4 && (l.compare(l.size() - 4, 4, ".nds") == 0 || l.compare(l.size() - 4, 4, ".srl") == 0))
-                        files.push_back({n, false});
-                }
-            }
-            closedir(d);
-            auto byName = [](const Entry& a, const Entry& b) { return LowerCase(a.name) < LowerCase(b.name); };
-            std::sort(dirs.begin(), dirs.end(), byName);
-            std::sort(files.begin(), files.end(), byName);
-            entries.insert(entries.end(), dirs.begin(), dirs.end());
-            entries.insert(entries.end(), files.begin(), files.end());
-        }
-        sel = 0; top = 0;
-    };
-    load();
-
-    while (appletMainLoop())
-    {
-        GfxClear(r);
-        GfxColor(r, 18, 22, 30, 255);
-        { SDL_Rect bg {0, 0, 1280, 720}; GfxFill(r, &bg); }
-        DrawText(r, "Choisir une ROM", 60, 24, Accent);
-        DrawText(r, dir, 60, 66, Grey);
-        for (int i = 0; i < rows && top + i < (int)entries.size(); i++)
-        {
-            const Entry& e = entries[top + i];
-            int y = 120 + i * 36;
-            if (top + i == sel)
-            {
-                GfxColor(r, 40, 70, 110, 255);
-                SDL_Rect bar {40, y - 2, 1200, 36};
-                GfxFill(r, &bar);
-            }
-            DrawText(r, (e.isDir ? "[dossier]  " : "") + e.name, 60, y, top + i == sel ? White : Grey);
-        }
-        if (entries.empty()) DrawText(r, "(aucune ROM .nds ici)", 60, 120, Grey);
-        DrawText(r, "A : choisir     B : dossier parent     +/- : quitter", 60, 656, Grey);
-        GfxPresent(r);
-
-        SDL_Event ev;
-        if (!SDL_WaitEventTimeout(&ev, 200) || ev.type != SDL_JOYBUTTONDOWN) continue;
-        int n = (int)entries.size();
-        switch (ev.jbutton.button)
-        {
-        case 13: if (n) sel = std::max(sel - 1, 0); break;
-        case 15: if (n) sel = std::min(sel + 1, n - 1); break;
-        case 12: if (n) sel = std::max(sel - rows, 0); break;
-        case 14: if (n) sel = std::min(sel + rows, n - 1); break;
-        case 10: case 11: return "";
-        case 1:
-        {
-            if (dir.size() > 6)
-            {
-                size_t sl = dir.find_last_of('/');
-                dir = sl <= 5 ? "sdmc:/" : dir.substr(0, sl);
-                load();
-            }
-            break;
-        }
-        case 0:
-        {
-            if (!n) break;
-            const Entry& e = entries[sel];
-            if (e.isDir)
-            {
-                if (e.name == "..")
-                {
-                    size_t sl = dir.find_last_of('/');
-                    dir = sl <= 5 ? "sdmc:/" : dir.substr(0, sl);
-                }
-                else dir = join(dir, e.name);
-                load();
-            }
-            else return join(dir, e.name);
-            break;
-        }
-        }
-        if (sel < top) top = sel;
-        if (sel >= top + rows) top = sel - rows + 1;
-    }
-    return "";
-}
-
 
 // Probe of the GLES3 stack (config gltest=1): context version, extensions, swap rate. Writes to the log and exits.
 static int GlProbe(std::function<void(const std::string&)> say)
@@ -557,7 +452,36 @@ int main(int argc, char** argv)
         if (R_SUCCEEDED(plGetSharedFontByType(&fd, PlSharedFontType_Standard)))
             UIFont = TTF_OpenFontRW(SDL_RWFromConstMem(fd.address, fd.size), 0, 28);
     }
-    logf("ui font: %s\n", UIFont ? "ok" : "unavailable");
+    logf("ui font: %s, menu fonts: %s\n", UIFont ? "ok" : "unavailable", Ui::Init() ? "ok" : "unavailable");
+
+    // started from the album (applet mode): ~400 MB of memory instead of ~3.2 GB, not enough for the emulator (the JIT and
+    // the GPU renderer crashed, sometimes restarting the console): say how to start in application mode instead
+    {
+        AppletType at = appletGetAppletType();
+        if (at != AppletType_Application && at != AppletType_SystemApplication)
+        {
+            logf("applet mode (type %d): not enough memory, message shown\n", (int)at);
+            Ui::Message(renderer, "Lancez melonDS Switch en mode application",
+                        "melonDS Switch a été lancé depuis l'Album (mode applet), qui ne laisse pas assez de mémoire à l'émulateur.\n\n"
+                        "Pour le lancer en mode application : maintenez " UI_R " en lançant un jeu (n'importe lequel) depuis le menu HOME, "
+                        "et gardez " UI_R " maintenu en choisissant l'utilisateur, jusqu'à l'ouverture du menu des homebrews.",
+                        "Quitter");
+            Ui::Shutdown();
+            if (UIFont) TTF_CloseFont(UIFont);
+            TTF_Quit();
+            plExit();
+            SDL_GL_DeleteContext(gfx.Context);
+            SDL_DestroyWindow(gfx.Window);
+            SDL_Quit();
+            if (clkOk) { if (oldClock) clkrstSetClockRate(&cpuSession, oldClock); clkrstCloseSession(&cpuSession); }
+            if (emcOk) clkrstCloseSession(&emcSession);
+            if (gpuOk) { if (oldGpuClock) clkrstSetClockRate(&gpuSession, oldGpuClock); clkrstCloseSession(&gpuSession); }
+            if (tsOk) tsSessionClose(&tsSession);
+            tsExit();
+            clkrstExit();
+            return 0;
+        }
+    }
 
     // display settings (menu), kept in ui.txt
     auto ui = ReadConfig("ui.txt");
@@ -587,40 +511,66 @@ int main(int argc, char** argv)
         else tex = GfxTexCreate(256, 384, filter != 0);
     };
 
-    // which ROM: rom= in config.txt wins, else the last one chosen (lastrom.txt); the browser opens if none, or with --browse
+    // which ROM: rom= in config.txt starts it directly (test tools), otherwise the home screen (recent games first)
     bool wantBrowse = false;
     for (int i = 1; i < argc; i++)
         if (!strcmp(argv[i], "--browse")) wantBrowse = true;
     std::string romPath = cfg.count("rom") ? cfg["rom"] : "";
     const std::string configRom = romPath;
-    if (romPath.empty())
-    {
-        auto last = ReadConfig("lastrom.txt");
-        if (last.count("rom")) romPath = last["rom"];
-    }
     if (wantBrowse || romPath.empty() || !FileExists(romPath))
     {
         std::string startDir = cfg.count("romdir") ? cfg["romdir"] : "";
-        if (startDir.empty() && !romPath.empty())
-        {
-            size_t sl = romPath.find_last_of('/');
-            if (sl != std::string::npos) startDir = romPath.substr(0, sl);
-        }
         if (startDir.empty())
         {
             struct stat st;
             startDir = stat("sdmc:/roms/nds", &st) == 0 ? "sdmc:/roms/nds" : "sdmc:/";
         }
-        romPath = BrowseRom(renderer, startDir);
+        romPath = RunHome(renderer, ConfigDir, startDir, SWITCH_APP_VERSION);
         if (romPath.empty())
         {
             logf("no ROM chosen\n");
+            Ui::Shutdown();
             return 0;
         }
         FILE* f = fopen((std::string(ConfigDir) + "/lastrom.txt").c_str(), "w");
         if (f) { fprintf(f, "rom=%s\n", romPath.c_str()); fclose(f); }
+        // the home screen may have changed the general settings: read them again (config.txt still wins)
+        ui0 = ReadConfig("ui.txt");
+        ui = ui0;
+        disp = DisplayOptions();
+        disp.Read(ui);
+        filter = ui.count("filter") ? atoi(ui["filter"].c_str()) : 0;
+        showFps = ui.count("showfps") && ui["showfps"] == "1";
+        if (!cfg.count("gpu") && ui0.count("gpu")) useGpu = ui0["gpu"] == "1";
+        if (!cfg.count("gpuscale") && ui0.count("gpuscale")) gpuScale = std::clamp(atoi(ui0["gpuscale"].c_str()), 1, 3);
+        if (!cfg.count("threaded3d") && ui0.count("threaded")) threaded3d = ui0["threaded"] == "1";
+        if (!cfg.count("overclock") && ui0.count("cpu"))
+        {
+            int mhz = atoi(ui0["cpu"].c_str());
+            autoClock = mhz == 0;
+            overclockMHz = autoClock ? 1224 : mhz;
+            if (clkOk) clkrstSetClockRate(&cpuSession, (u32)overclockMHz * 1000000u);
+        }
     }
+    AddRecent(std::string(ConfigDir) + "/recent.txt", romPath);
+    Ui::Trim();
+    Ui::ForgetIcons();
     logf("rom: %s\n", romPath.c_str());
+    // errors before the game runs: message, then back to the home screen
+    auto goHome = [&]() {
+        std::string line = std::string("\"") + argv[0] + "\" --browse";
+        envSetNextLoad(argv[0], line.c_str());
+    };
+    std::unique_ptr<u8[]> romData;
+    u32 romLen = 0;
+    if (!ReadFile(romPath, romData, romLen) || romLen < 0x200)
+    {
+        logf("cannot read rom %s\n", romPath.c_str());
+        Ui::Message(renderer, "Impossible de lire ce jeu", "Le fichier n'a pas pu être lu (ou il est trop petit pour être un jeu DS) :\n" + romPath, "Retour");
+        Ui::Shutdown();
+        goHome();
+        return 0;
+    }
     makeTexture();
 
     SDL_AudioSpec want {}, have {};
@@ -649,13 +599,6 @@ int main(int argc, char** argv)
         }
     });
 
-    std::unique_ptr<u8[]> romData;
-    u32 romLen;
-    if (!ReadFile(romPath, romData, romLen))
-    {
-        logf("cannot read rom %s\n", romPath.c_str());
-        return 1;
-    }
 
     // per-game settings: <rom>.ui (menu choices made while this game runs) > built-in defaults for games known to need
     // them > ui.txt; config.txt still wins. Built-in: 4th generation Pokemon in software rendering (the GL renderer leaves
@@ -666,9 +609,7 @@ int main(int argc, char** argv)
         const bool fromFile = !gu.empty();
         char code[5] = {};
         if (romLen >= 0x10) memcpy(code, romData.get() + 0x0C, 4);
-        bool builtinSoft = false;
-        for (const char* c : {"ADA", "APA", "CPU", "IPK", "IPG"})   // Diamond, Pearl, Platinum, HeartGold, SoulSilver
-            if (!strncmp(code, c, 3)) builtinSoft = true;
+        bool builtinSoft = BuiltinSoftware(code);
         if (builtinSoft && !gu.count("gpu")) gu["gpu"] = "0";
         if (!cfg.count("gpu") && gu.count("gpu")) useGpu = gu["gpu"] == "1";
         if (!cfg.count("gpuscale") && gu.count("gpuscale")) gpuScale = std::clamp(atoi(gu["gpuscale"].c_str()), 1, 3);
@@ -725,7 +666,12 @@ int main(int argc, char** argv)
     if (!cart)
     {
         logf("failed to parse the ROM\n");
-        return 1;
+        watchdogStop = true;
+        watchdog.join();
+        Ui::Message(renderer, "Ce fichier n'est pas un jeu DS valide", "melonDS n'a pas reconnu ce fichier comme une ROM de Nintendo DS :\n" + romPath, "Retour");
+        Ui::Shutdown();
+        goHome();
+        return 0;
     }
     nds->SetNDSCart(std::move(cart));
     DebugStage = 11;
@@ -956,23 +902,23 @@ int main(int argc, char** argv)
 
     // in-game menu (ZL + ZR + PLUS): emulation is paused. Returns 0 = resume, 1 = change ROM, 2 = quit
     // Two pages: the main one and "Affichage" (screen layout), whose changes show at once on the paused frame behind.
-    struct MenuItem { std::string Label; std::function<void(int dir, bool act)> Do; };
     auto runMenu = [&]() -> int {
         if (audio) SDL_PauseAudioDevice(audio, 1);
         const int prevStage = DebugStage;
         DebugStage = 99;   // paused: the watchdog must not report a hang
-        int page = 0, sel = 0, result = -1;
+        int page = 0, result = -1;
+        Ui::ListState pageSt[2];
         std::string note;
         auto onOff = [](bool v) { return std::string(v ? "oui" : "non"); };
         auto display = [&]() { computeLayout(); saveUi(); };
         while (result < 0 && appletMainLoop())
         {
-            std::vector<MenuItem> items;
+            std::vector<Ui::Item> items;
             if (page == 0)
             {
-                items.push_back({"Reprendre", [&](int, bool act) { if (act) result = 0; }});
-                items.push_back({"Affichage...", [&](int, bool act) { if (act) { page = 1; sel = 0; } }});
-                items.push_back({"Fréquence CPU : " + (autoClock ? "auto (" + std::to_string(overclockMHz) + " MHz)" : std::to_string(overclockMHz) + " MHz"), [&](int dir, bool) {
+                items.push_back({"Reprendre", "", [&](int, bool act) { if (act) result = 0; }});
+                items.push_back({"Affichage", "", [&](int, bool act) { if (act) page = 1; }});
+                items.push_back({"Fréquence CPU", (autoClock ? "auto (" + std::to_string(overclockMHz) + " MHz)" : std::to_string(overclockMHz) + " MHz"), [&](int dir, bool) {
                     const int steps[] = {0, 1020, 1224, 1581, 1785};   // 0 = auto
                     int idx = 0;
                     if (!autoClock)
@@ -986,31 +932,31 @@ int main(int argc, char** argv)
                     if (clkOk) clkrstSetClockRate(&cpuSession, (u32)overclockMHz * 1000000u);
                     saveUi();
                 }});
-                items.push_back({std::string("Rendu 3D : ") + (useGpu ? "GPU (GLES 3)" : "logiciel"), [&](int, bool) {
+                items.push_back({"Rendu 3D", std::string(useGpu ? "GPU (GLES 3)" : "logiciel"), [&](int, bool) {
                     bool want = !useGpu;
                     if (applyRenderer(want)) useGpu = want;
                     else applyRenderer(useGpu);
                     gpuTex = 0;
                     saveUi();
                 }});
-                items.push_back({"Résolution GPU : " + std::to_string(gpuScale) + "x" + (useGpu ? "" : " (rendu GPU seulement)"), [&](int dir, bool) {
+                items.push_back({"Résolution GPU", std::to_string(gpuScale) + "x" + (useGpu ? "" : " (rendu GPU seulement)"), [&](int dir, bool) {
                     gpuScale = dir ? std::clamp(gpuScale + dir, 1, 3) : gpuScale % 3 + 1;
                     if (useGpu) applyRenderer(true);
                     saveUi();
                 }});
-                items.push_back({std::string("3D en thread séparé : ") + (threaded3d ? "oui (logiciel)" : "non"), [&](int, bool) {
+                items.push_back({"3D logicielle sur un 2e cœur", std::string(threaded3d ? "oui (logiciel)" : "non"), [&](int, bool) {
                     threaded3d = !threaded3d;
                     if (!useGpu) applyRenderer(false);
                     saveUi();
                 }});
-                items.push_back({"Emplacement d'état : " + std::to_string(slot), [&](int dir, bool) { slot = dir ? std::clamp(slot + dir, 1, 4) : slot % 4 + 1; }});
-                items.push_back({"Sauvegarder l'état", [&](int, bool act) {
+                items.push_back({"Emplacement d'état", std::to_string(slot), [&](int dir, bool) { slot = dir ? std::clamp(slot + dir, 1, 4) : slot % 4 + 1; }});
+                items.push_back({"Sauvegarder l'état", "", [&](int, bool act) {
                     if (!act) return;
                     bool ok = saveState(slot, true);
                     logf("save state slot %d: %s\n", slot, ok ? "ok" : "FAILED");
                     note = ok ? "État sauvegardé." : "Échec de la sauvegarde.";
                 }});
-                items.push_back({"Charger l'état", [&](int, bool act) {
+                items.push_back({"Charger l'état", "", [&](int, bool act) {
                     if (!act) return;
                     bool ok = loadState(slot);
                     stateLoaded |= ok;
@@ -1018,71 +964,52 @@ int main(int argc, char** argv)
                     note = ok ? "État chargé." : "Aucun état dans cet emplacement.";
                     if (ok) result = 0;
                 }});
-                items.push_back({"Changer de jeu", [&](int, bool act) { if (act) result = 1; }});
-                items.push_back({"Quitter", [&](int, bool act) { if (act) result = 2; }});
+                items.push_back({"Changer de jeu", "", [&](int, bool act) { if (act) result = 1; }});
+                items.push_back({"Quitter", "", [&](int, bool act) { if (act) result = 2; }});
             }
             else
             {
-                items.push_back({std::string("Disposition : ") + LayoutName(disp.Layout), [&](int dir, bool) { disp.Layout = (disp.Layout + (dir < 0 ? 2 : 1)) % 3; display(); }});
+                items.push_back({"Disposition", LayoutName(disp.Layout), [&](int dir, bool) { disp.Layout = (disp.Layout + (dir < 0 ? 2 : 1)) % 3; display(); }});
                 if (disp.Layout == 2)
-                    items.push_back({std::string("Grand écran : ") + (disp.Swap ? "bas" : "haut"), [&](int, bool) { disp.Swap = !disp.Swap; display(); }});
+                    items.push_back({"Grand écran", std::string(disp.Swap ? "bas" : "haut"), [&](int, bool) { disp.Swap = !disp.Swap; display(); }});
                 else
                 {
-                    items.push_back({std::string("Taille des écrans : ") + SizingName(disp.Sizing), [&](int dir, bool) { disp.Sizing = (disp.Sizing + (dir < 0 ? 4 : 1)) % 5; display(); }});
-                    items.push_back({"Inverser haut et bas : " + onOff(disp.Swap), [&](int, bool) { disp.Swap = !disp.Swap; display(); }});
+                    items.push_back({"Taille des écrans", SizingName(disp.Sizing), [&](int dir, bool) { disp.Sizing = (disp.Sizing + (dir < 0 ? 4 : 1)) % 5; display(); }});
+                    items.push_back({"Inverser haut et bas", onOff(disp.Swap), [&](int, bool) { disp.Swap = !disp.Swap; display(); }});
                 }
-                items.push_back({std::string("Rotation : ") + RotationName(disp.Rotation), [&](int dir, bool) {
+                items.push_back({"Rotation", RotationName(disp.Rotation), [&](int dir, bool) {
                     const int rots[] = {0, 1, 3};
                     int idx = disp.Rotation == 1 ? 1 : disp.Rotation == 3 ? 2 : 0;
                     disp.Rotation = rots[(idx + (dir < 0 ? 2 : 1)) % 3];
                     display();
                 }});
-                items.push_back({std::string("Échelle : ") + (disp.IntegerScale ? "entière (pixels égaux)" : "ajustée à l'écran"), [&](int, bool) { disp.IntegerScale = !disp.IntegerScale; display(); }});
-                items.push_back({"Écart entre les écrans : " + std::to_string(disp.Gap), [&](int dir, bool) { disp.Gap = std::clamp(disp.Gap + (dir < 0 ? -8 : 8), 0, 64); if (!dir && disp.Gap == 64) disp.Gap = 0; display(); }});
-                items.push_back({"Grand écran si l'écran du bas est noir : " + onOff(disp.AutoTop), [&](int, bool) { disp.AutoTop = !disp.AutoTop; bottomBlack.Reset(); display(); }});
-                items.push_back({std::string("Filtre : ") + (filter ? "lissé" : "pixels nets"), [&](int, bool) { filter ^= 1; makeTexture(); saveUi(); }});
-                items.push_back({"Afficher les fps : " + onOff(showFps), [&](int, bool) { showFps = !showFps; saveUi(); }});
-                items.push_back({"Retour", [&](int, bool act) { if (act) { page = 0; sel = 1; } }});
+                items.push_back({"Échelle", std::string(disp.IntegerScale ? "entière" : "ajustée à l'écran"), [&](int, bool) { disp.IntegerScale = !disp.IntegerScale; display(); }});
+                items.push_back({"Écart entre les écrans", std::to_string(disp.Gap), [&](int dir, bool) { disp.Gap = std::clamp(disp.Gap + (dir < 0 ? -8 : 8), 0, 64); if (!dir && disp.Gap == 64) disp.Gap = 0; display(); }});
+                items.push_back({"Grand écran si le bas est noir", onOff(disp.AutoTop), [&](int, bool) { disp.AutoTop = !disp.AutoTop; bottomBlack.Reset(); display(); }});
+                items.push_back({"Filtre", std::string(filter ? "lissé" : "pixels nets"), [&](int, bool) { filter ^= 1; makeTexture(); saveUi(); }});
+                items.push_back({"Afficher les fps", onOff(showFps), [&](int, bool) { showFps = !showFps; saveUi(); }});
+                items.push_back({"Retour", "", [&](int, bool act) { if (act) page = 0; }});
             }
-            const int count = (int)items.size();
-            sel = std::clamp(sel, 0, count - 1);
-
             GfxClear(renderer);
             drawScreens();
-            GfxBlendMode(renderer, true);
-            GfxColor(renderer, 10, 14, 22, page == 1 ? 90 : 150);
-            SDL_Rect full {0, 0, 1280, 720};
-            GfxFill(renderer, &full);
             // panel on the left: on the display page the screens stay visible behind
-            GfxColor(renderer, 14, 20, 32, 235);
-            SDL_Rect panel {0, 0, 600, 720};
-            GfxFill(renderer, &panel);
-            GfxBlendMode(renderer, false);
-            DrawText(renderer, page == 0 ? "melonDS Switch " SWITCH_APP_VERSION : "Affichage", 40, 28, Accent);
-            for (int i = 0; i < count; i++)
-            {
-                int y = 92 + i * 44;
-                if (i == sel)
-                {
-                    GfxColor(renderer, 40, 70, 110, 255);
-                    SDL_Rect bar {24, y - 4, 552, 40};
-                    GfxFill(renderer, &bar);
-                }
-                DrawText(renderer, items[i].Label, 40, y, i == sel ? White : Grey);
-            }
-            if (!note.empty()) DrawText(renderer, note, 40, 92 + count * 44 + 4, Accent);
-            DrawText(renderer, page == 0 ? "A : valider   ←/→ : changer   B : reprendre" : "A ou ←/→ : changer   B : retour", 40, 672, Grey);
+            Ui::Fill(renderer, 0, 0, 1280, 720, 10, 14, 22, page == 1 ? 60 : 140);
+            Ui::Fill(renderer, 0, 0, 620, 720, 35, 38, 44, 242);
+            Ui::DrawText(renderer, page == 0 ? "melonDS Switch" : "Affichage", 40, 22, Ui::Text, Ui::Big);
+            if (page == 0) Ui::DrawText(renderer, SWITCH_APP_VERSION, 40 + Ui::TextWidth("melonDS Switch", Ui::Big) + 12, 36, Ui::TextDim, Ui::Small);
+            Ui::Fill(renderer, 20, 84, 580, 1, 90, 96, 106);
+            Ui::DrawList(renderer, items, pageSt[page], 16, 96, 580, 10, 54);
+            Ui::Fill(renderer, 20, 646, 580, 1, 90, 96, 106);
+            if (!note.empty()) Ui::DrawText(renderer, note, 40, 606, Ui::AccentText, Ui::Small, 560);
+            Ui::DrawText(renderer, page == 0 ? UI_A " Valider   " UI_DPAD_LR " Changer   " UI_B " Reprendre" : UI_A " / " UI_DPAD_LR " Changer   " UI_B " Retour", 40, 666, Ui::Text, Ui::Small);
             GfxPresent(renderer);
+            Ui::Trim();
 
-            SDL_Event ev;
-            if (!SDL_WaitEventTimeout(&ev, 200) || ev.type != SDL_JOYBUTTONDOWN) continue;
-            int b = ev.jbutton.button;
-            int dir = b == 14 ? 1 : b == 12 ? -1 : 0;
-            if (b == 13) sel = (sel + count - 1) % count;
-            else if (b == 15) sel = (sel + 1) % count;
-            else if (b == 1) { if (page == 1) { page = 0; sel = 1; } else result = 0; }
-            else if (b == 10) result = 0;
-            else if (b == 0 || dir) items[sel].Do(dir, b == 0);
+            Ui::Input in;
+            if (!Ui::Poll(in, 200)) continue;
+            if (in.Button == Ui::BtnB) { if (page == 1) page = 0; else result = 0; }
+            else if (in.Button == Ui::BtnPlus) result = 0;
+            else Ui::ListInput(items, pageSt[page], in, 16, 96, 580, 10, 54);
         }
         DebugStage = prevStage;
         if (audio) { primeAudio(200); SDL_PauseAudioDevice(audio, 0); }
@@ -1543,6 +1470,8 @@ enum { ProfARM9, ProfARM7, ProfEvtLCD, ProfEvtSPU, ProfEvtOther, ProfCompile, Pr
     for (SDL_Joystick* j : joysticks)
         if (j) SDL_JoystickClose(j);
     GfxTexDestroy(&fpsTex);
+    GfxTexDestroy(&noteTex);
+    Ui::Shutdown();
     if (UIFont) TTF_CloseFont(UIFont);
     TTF_Quit();
     if (samplerOn)

@@ -132,6 +132,13 @@ bool ReadRomInfo(const std::string& path, RomInfo& info, int language)
     return ok;
 }
 
+bool BuiltinSoftware(const std::string& gameCode)
+{
+    for (const char* c : {"ADA", "APA", "CPU", "IPK", "IPG"})   // Diamond, Pearl, Platinum, HeartGold, SoulSilver
+        if (!strncmp(gameCode.c_str(), c, 3)) return true;
+    return false;
+}
+
 std::vector<std::string> ReadRecent(const std::string& file)
 {
     std::vector<std::string> out;

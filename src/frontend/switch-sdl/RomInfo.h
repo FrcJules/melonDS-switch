@@ -43,6 +43,10 @@ void ParseBanner(const uint8_t* banner, size_t len, RomInfo& info, int language)
 
 std::string Utf16ToUtf8(const uint16_t* s, size_t maxLen);
 
+// games started in software rendering unless chosen otherwise: 4th generation Pokemon (the GL renderer leaves dotted
+// black lines between map polygons, upstream issue #458)
+bool BuiltinSoftware(const std::string& gameCode);
+
 // "recent games" list (newest first): one path per line
 std::vector<std::string> ReadRecent(const std::string& file);
 void AddRecent(const std::string& file, const std::string& romPath, size_t maxCount = 30);
