@@ -252,6 +252,7 @@ private:
     void SetupYSpanDummy(RenderPolygon* rp, SpanSetupY* span, Polygon* poly, int vertex, int side, s32 positions[10][2]);
 
     bool WaitPending(const char* where);
+    void SignalFence();
     bool Checkpoint(const char* pass);
 public:
     // diagnosis (config dk3dsync=N): submit and wait after each pass of the first N frames, log which one hangs

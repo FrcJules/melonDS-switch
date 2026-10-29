@@ -250,6 +250,15 @@ DekoRenderer3D::~DekoRenderer3D()
     delete[] ClearBitmap[1];
 }
 
+// dkQueueSignalFence(..., flush = true) does NOT start the queue on this firmware (measured on the console with the
+// official compute example: such a fence was never signalled, 0 out of 120; with the queue flushed explicitly it
+// was signalled 120 out of 120). Signal without the flag, then flush.
+void DekoRenderer3D::SignalFence()
+{
+    dkQueueSignalFence(Queue, &Fence, false);
+    dkQueueFlush(Queue);
+}
+
 int DekoRenderer3D::DebugSync = 0;
 
 // diagnosis: runs what was recorded up to this pass and waits for it (GPU state persists between command lists).
@@ -259,20 +268,18 @@ bool DekoRenderer3D::Checkpoint(const char* pass)
 {
     if (!DebugSync) return true;
     dkQueueSubmitCommands(Queue, dkCmdBufFinishList(Cmd));
-    dkQueueSignalFence(Queue, &Fence, true);
+    SignalFence();
     Platform::Log(Platform::LogLevel::Warn, "deko3d 3D: pass '%s' submitted\n", pass);
-    dkFenceWait(&Fence, -1);
-    Platform::Log(Platform::LogLevel::Warn, "deko3d 3D: pass '%s' done\n", pass);
+    DkResult r = dkFenceWait(&Fence, 1000000000LL);
+    Platform::Log(Platform::LogLevel::Warn, "deko3d 3D: pass '%s' %s\n", pass, r == DkResult_Success ? "done" : "TIMEOUT");
     return true;
 }
 
-// Waits with a timeout are not usable: in this process libnx's timed fence waits always report a timeout (seen
-// on the console, even on the presentation queue). Infinite waits work; a GPU hang is caught by the frontend
-// watchdog, which ends the process instead of leaving the console frozen.
+// bounded wait: a GPU hang disables the 3D instead of freezing the app (the frontend watchdog is the last resort)
 bool DekoRenderer3D::WaitPending(const char* where)
 {
     if (!Pending) return !Broken;
-    if (dkFenceWait(&Fence, -1) != DkResult_Success)
+    if (dkFenceWait(&Fence, 1000000000LL) != DkResult_Success)
     {
         Platform::Log(Platform::LogLevel::Error, "deko3d 3D: fence wait failed (%s), 3D disabled\n", where);
         Broken = true;
@@ -303,17 +310,22 @@ void DekoRenderer3D::BeginCommands()
     dkCmdBufClear(Cmd);
     dkCmdBufAddMemory(Cmd, CmdMem, 0, CmdSize);
     StagingUsed = 0;
+    Checkpoint("empty list");
     // descriptors may have been (re)written by the CPU, staging data too
-    dkCmdBufBarrier(Cmd, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors | DkInvalidateFlags_L2Cache);
+    dkCmdBufBarrier(Cmd, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_Descriptors);
+    Checkpoint("barrier image/descriptors");
+    dkCmdBufBarrier(Cmd, DkBarrier_Full, DkInvalidateFlags_L2Cache);
+    Checkpoint("barrier L2 cache");
     dkCmdBufBindImageDescriptorSet(Cmd, DataGpu(OffImgDesc), MaxDescriptors);
     dkCmdBufBindSamplerDescriptorSet(Cmd, DataGpu(OffSmpDesc), SamplerCount);
+    Checkpoint("descriptor sets");
 }
 
 // runs what was recorded so far and waits for it (staging area full), then goes on recording
 void DekoRenderer3D::SubmitAndWait()
 {
     dkQueueSubmitCommands(Queue, dkCmdBufFinishList(Cmd));
-    dkQueueSignalFence(Queue, &Fence, true);
+    SignalFence();
     Pending = true;
     WaitPending("staging area full");
     BeginCommands();
@@ -1131,7 +1143,7 @@ void DekoRenderer3D::RenderFrame()
     }
 
     dkQueueSubmitCommands(Queue, dkCmdBufFinishList(Cmd));
-    dkQueueSignalFence(Queue, &Fence, true);
+    SignalFence();
     Pending = true;
     if (DebugSync > 0) DebugSync--;   // checkpoints on the first N frames only
 }

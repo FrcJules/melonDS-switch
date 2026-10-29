@@ -168,7 +168,8 @@ void EnsureFrame()
     S.Slot = (S.Slot + 1) % Slots;
     if (S.Submitted[S.Slot])
     {
-        dkFenceWait(&S.Fences[S.Slot], -1);
+        if (dkFenceWait(&S.Fences[S.Slot], 2000000000LL) != DkResult_Success)
+            melonDS::Platform::Log(melonDS::Platform::LogLevel::Error, "deko3d: frame fence not signalled within 2 s\n");
         S.Submitted[S.Slot] = false;
     }
     for (int id : S.PendingFree[S.Slot]) ReleaseTex(id);
