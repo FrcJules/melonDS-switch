@@ -157,9 +157,10 @@ void ARM::SetGdbArgs(std::optional<GDBArgs> gdb)
 void ARM::Reset()
 {
     Cycles = 0;
-    Halted = 0;
-
-    IRQ = 0;
+    // Halted, IRQ, IdleLoop and the unused 4th byte of StopExecution, which the JIT tests as a whole: the 4th byte
+    // was never written, so leftover memory there made every JIT block leave the chain (different CPU interleaving,
+    // and slower) depending on how the frontend had used the heap before
+    StopExecution = 0;
 
     for (int i = 0; i < 16; i++)
         R[i] = 0;
@@ -220,6 +221,8 @@ void ARM::DoSavestate(Savestate* file)
     u32 halted = Halted;
     file->Var32(&halted);
     Halted = halted;
+    if (!file->Saving)
+        IdleLoop = 0;   // only set inside a run, not saved
 
     file->VarArray(R, 16*sizeof(u32));
     file->Var32(&CPSR);

@@ -162,7 +162,7 @@ public:
             u8 IRQ; // nonzero to trigger IRQ
             u8 IdleLoop;
         };
-        u32 StopExecution;
+        u32 StopExecution = 0;
     };
 
     u32 CodeRegion;
