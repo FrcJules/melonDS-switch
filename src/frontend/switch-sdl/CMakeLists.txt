@@ -4,7 +4,7 @@ find_package(Threads REQUIRED)
 find_package(SDL2 REQUIRED)
 
 set(SWITCH_APP_NAME "melonDS Switch" CACHE STRING "Title shown in hbmenu")
-set(SWITCH_APP_VERSION "0.2.0" CACHE STRING "Version shown in hbmenu and in the menu")
+set(SWITCH_APP_VERSION "0.3.0" CACHE STRING "Version shown in hbmenu and in the menu")
 
 add_executable(melonDS-switch
     main.cpp
