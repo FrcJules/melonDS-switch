@@ -260,7 +260,7 @@ public: // TODO: Encapsulate the rest of these members
     void* UserData;
 
     int ConsoleType;
-    int CurCPU;
+    int CurCPU = 0;
     // longest stretch (in ARM7 cycles) the CPUs run before the main loop re-evaluates events; events still fire at their exact time
     s32 MaxIterationCycles = 64;
 
@@ -511,7 +511,7 @@ protected:
     void InitTimings();
     u32 SchedListMask;
     u64 SysTimestamp;
-    u8 WRAMCnt;
+    u8 WRAMCnt = 0;
     u8 PostFlag9;
     u8 PostFlag7;
     u16 PowerControl7;

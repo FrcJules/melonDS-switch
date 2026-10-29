@@ -57,7 +57,7 @@ private:
     u32 InputBufferReadPos = 0;
     u32 InputBufferLevel = 0;
 
-    u8 OpenMask;
+    u8 OpenMask = 0;
     u32 CycleCount;
     s16 CurSample;
     u8 StopMask;
