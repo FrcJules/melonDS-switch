@@ -384,7 +384,8 @@ static void DrawHelp(Gfx* g)
         {UI_ZL " + " UI_ZR " + " UI_DPAD_LR, "Choisir l'emplacement d'état (1 à 4)"},
         {UI_ZL " + " UI_ZR " + " UI_UP, "Disposition suivante (verticale, horizontale, hybride)"},
         {UI_ZL " + " UI_ZR " + " UI_MINUS, "Inverser les écrans (hybride : grand écran haut/bas)"},
-        {UI_L " + " UI_R " + " UI_PLUS " + " UI_MINUS, "Quitter (état sauvegardé, repris au lancement)"},
+        {UI_ZL " + " UI_ZR " + " UI_B, "Quitter (état sauvegardé, repris au lancement)"},
+        {UI_L " + " UI_R " + " UI_PLUS " + " UI_MINUS, "Va au jeu (retour à l'écran titre dans beaucoup de jeux)"},
     };
     int y = ListY + 6;
     for (const Line& l : lines)

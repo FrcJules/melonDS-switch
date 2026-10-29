@@ -46,7 +46,8 @@ there automatically).
 | ZL + ZR + PLUS | menu (display, CPU, renderer, resolution, states, change game, quit) |
 | ZL + ZR held, then X / Y / left / right | save state / load state / slot 1-4 |
 | ZL + ZR held, then up / MINUS | next layout (vertical, horizontal, hybrid) / swap the screens (hybrid: big screen top or bottom) |
-| L + R + PLUS + MINUS | quit (the state is saved in slot 0 and reloaded next time) |
+| ZL + ZR + B | quit (the state is saved in slot 0 and reloaded next time); also in the menu |
+| L + R + PLUS + MINUS | goes to the game (soft reset to the title screen in many games) |
 
 ## Files (`sdmc:/switch/melonDS-Switch/`)
 | File | |

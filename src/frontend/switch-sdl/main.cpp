@@ -28,7 +28,7 @@
 // Every second a line "t fps avg_ms max_ms" is appended to sdmc:/switch/melonDS-Switch/log.txt.
 // Touch without the touch screen (docked): the right stick moves a cursor over the bottom screen, hold the right stick click to touch.
 // The left stick works as the D-pad.
-// Quit: hold L + R + PLUS + MINUS.
+// Quit: ZL + ZR + B, or the menu (L + R + PLUS + MINUS goes to the game: soft reset in many games).
 
 #include <stdio.h>
 #include <lz4.h>
@@ -1171,6 +1171,8 @@ int main(int argc, char** argv)
                         saveUi();
                         showNote(std::string("Disposition ") + LayoutName(disp.Layout) + (disp.Swap ? (disp.Layout == 2 ? ", grand écran : bas" : ", inversée") : ""));
                     }
+                    else if (b == 1)
+                        running = false;   // ZL + ZR + B: quit (the state is saved in slot 0)
                 }
                 else
                 {
@@ -1231,9 +1233,8 @@ int main(int argc, char** argv)
         else if (cursorShownFrames > 0)
             cursorShownFrames--;
 
-        const u32 quit = (1 << 8) | (1 << 9) | (1 << 3) | (1 << 2); // R L Start Select
-        if ((keys & quit) == quit)
-            break;
+        // L + R + START + SELECT goes to the game: many DS games use it to go back to their title screen (soft reset).
+        // It used to quit the emulator; quitting is now ZL + ZR + B or the menu
 
         DebugStage = 2;
         nds->SetKeyMask(((pad & (1u << 8)) && (pad & (1u << 9))) ? 0xFFF : (~(keys | stickKeys) & 0xFFF));
