@@ -518,6 +518,14 @@ void NDS::Reset()
 
     DivCnt = 0;
     SqrtCnt = 0;
+    // the operand and result registers too: they were left as whatever was in memory, and games that start a division
+    // without rewriting every operand (the hardware keeps them) computed with that, differently from build to build
+    memset(DivNumerator, 0, sizeof(DivNumerator));
+    memset(DivDenominator, 0, sizeof(DivDenominator));
+    memset(DivQuotient, 0, sizeof(DivQuotient));
+    memset(DivRemainder, 0, sizeof(DivRemainder));
+    memset(SqrtVal, 0, sizeof(SqrtVal));
+    SqrtRes = 0;
 
     ARM9.Reset();
     ARM7.Reset();
@@ -689,6 +697,25 @@ bool NDS::DoSavestate(Savestate* file)
 
     file->Var16(&DivCnt);
     file->Var16(&SqrtCnt);
+    if (file->Saving || file->IsAtLeastVersion(14, 1))
+    {
+        file->VarArray(DivNumerator, sizeof(DivNumerator));
+        file->VarArray(DivDenominator, sizeof(DivDenominator));
+        file->VarArray(DivQuotient, sizeof(DivQuotient));
+        file->VarArray(DivRemainder, sizeof(DivRemainder));
+        file->VarArray(SqrtVal, sizeof(SqrtVal));
+        file->Var32(&SqrtRes);
+    }
+    else
+    {
+        // older states do not have them: start from the power-on values, the same on every load
+        memset(DivNumerator, 0, sizeof(DivNumerator));
+        memset(DivDenominator, 0, sizeof(DivDenominator));
+        memset(DivQuotient, 0, sizeof(DivQuotient));
+        memset(DivRemainder, 0, sizeof(DivRemainder));
+        memset(SqrtVal, 0, sizeof(SqrtVal));
+        SqrtRes = 0;
+    }
 
     file->Var32(&CPUStop);
 

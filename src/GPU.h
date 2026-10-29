@@ -632,8 +632,8 @@ public:
     u8 DispFIFOWritePtr;
     alignas(8) u16 DispFIFOBuffer[256];
 
-    u32 CaptureCnt;
-    bool CaptureEnable;
+    u32 CaptureCnt = 0;
+    bool CaptureEnable = false;
 
     alignas(u64) u8 Palette[2*1024] {};
     alignas(u64) u8 OAM[2*1024] {};
