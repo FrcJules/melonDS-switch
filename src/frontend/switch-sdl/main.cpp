@@ -777,6 +777,9 @@ int main(int argc, char** argv)
     // 3D renderer: the GLES 3 renderer (default, 2x) or software; software is also the fallback if the GL renderer fails. The GLES 3 renderer on the console's GPU (config gpu=0|1, menu, ui.txt)
     bool useGpu = cfg.count("gpu") ? cfg["gpu"] == "1" : (ui0.count("gpu") ? ui0["gpu"] == "1" : true);
     int gpuScale = std::clamp(cfg.count("gpuscale") ? atoi(cfg["gpuscale"].c_str()) : (ui0.count("gpuscale") ? atoi(ui0["gpuscale"].c_str()) : 2), 1, 3);
+    // test of the exactness of a 3D renderer: at this frame (counted from the start) the two software framebuffers are
+    // written to dump-<frame>.bin (top then bottom, 256x192 32-bit each)
+    int dumpFrame = cfg.count("dumpframe") ? atoi(cfg["dumpframe"].c_str()) : 0;
     bool threaded3d = cfg.count("threaded3d") ? cfg["threaded3d"] == "1" : (ui0.count("threaded") ? ui0["threaded"] == "1" : true);
     if (R_SUCCEEDED(clkrstInitialize()))
     {
@@ -1548,6 +1551,18 @@ int main(int argc, char** argv)
         void *top, *bottom;
         bool softFrame = nds->GPU.GetFramebuffers(&top, &bottom);   // true = software framebuffers, false = GPU renderer texture
         DebugStage = 4;
+        if (dumpFrame > 0 && softFrame && DebugFrames == dumpFrame)
+        {
+            char path[256];
+            snprintf(path, sizeof(path), "%s/dump-%d.bin", ConfigDir, dumpFrame);
+            if (FILE* df = fopen(path, "wb"))
+            {
+                fwrite(top, 4, 256 * 192, df);
+                fwrite(bottom, 4, 256 * 192, df);
+                fclose(df);
+                logf("frame %d dumped to %s\n", (int)DebugFrames, path);
+            }
+        }
         GfxClear(renderer);
         if (softFrame)
         {
@@ -1807,7 +1822,12 @@ enum { ProfARM9, ProfARM7, ProfEvtLCD, ProfEvtSPU, ProfEvtOther, ProfCompile, Pr
     logf("exit step 2\n");
     GfxTexDestroy(&tex);
     logf("exit step 3\n");
-    if (GfxDk) DkGfxShutdown();
+    if (GfxDk)
+    {
+        // the 3D renderer owns deko3d objects: they must be freed before the device
+        nds.reset();
+        DkGfxShutdown();
+    }
     if (gfx.Context) SDL_GL_DeleteContext(gfx.Context);
     logf("exit step 4\n");
     if (gfx.Window) SDL_DestroyWindow(gfx.Window);
