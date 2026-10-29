@@ -9,6 +9,7 @@ set(SWITCH_APP_VERSION "0.3.0" CACHE STRING "Version shown in hbmenu and in the 
 add_executable(melonDS-switch
     main.cpp
     Gfx.cpp
+    Controls.cpp
     Layout.cpp
     RomInfo.cpp
     Ui.cpp

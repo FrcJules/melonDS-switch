@@ -58,6 +58,7 @@
 
 #include "Args.h"
 #include "Gfx.h"
+#include "Controls.h"
 #include "Layout.h"
 #include "RomInfo.h"
 #include "Ui.h"
@@ -127,28 +128,6 @@ static std::map<std::string, std::string> ReadConfig(const char* file = "config.
 }
 
 // SDL joystick button numbers of a Switch controller -> DS key bits
-static u32 DSKeyForButton(int button)
-{
-    switch (button)
-    {
-    case 0: return 1 << 0;   // A
-    case 1: return 1 << 1;   // B
-    case 2: return 1 << 10;  // X
-    case 3: return 1 << 11;  // Y
-    case 6: return 1 << 9;   // L
-    case 7: return 1 << 8;   // R
-    case 10: return 1 << 3;  // PLUS -> Start
-    case 11: return 1 << 2;  // MINUS -> Select
-    case 12: return 1 << 5;  // left
-    case 13: return 1 << 6;  // up
-    case 14: return 1 << 4;  // right
-    case 15: return 1 << 7;  // down
-    }
-    return 0;
-}
-
-
-
 unsigned long long MelonGLProf[16];   // see PlatformOGL.h
 unsigned MelonGL2DSections = 0;       // see PlatformOGL.h
 
@@ -523,17 +502,46 @@ int main(int argc, char** argv)
     // filter and fps are global (ui.txt); the screen layout, renderer, resolution and CPU chosen in the menu are saved for
     // the running game (<rom>.ui), ui.txt keeps them as the defaults of the other games
     std::string gameUiFile;
+    // control profiles (Controls.h): built-in ones, overridden or completed by the files of controls/
+    std::vector<ControlProfile> profiles = BuiltinProfiles();
+    std::string controlsId;   // profile chosen for this game ("" = not chosen yet: automatic / default)
+    int profileIdx = 0;
+    {
+        std::string cdir = std::string(ConfigDir) + "/controls";
+        if (DIR* d = opendir(cdir.c_str()))
+        {
+            while (dirent* e = readdir(d))
+            {
+                std::string n = e->d_name;
+                if (n.size() < 5 || n.compare(n.size() - 4, 4, ".txt") != 0) continue;
+                ControlProfile p;
+                p.Id = n.substr(0, n.size() - 4);
+                p.Name = p.Id;
+                for (const ControlProfile& b : profiles) if (b.Id == p.Id) p = b;
+                p.Read(ReadConfig(("controls/" + n).c_str()));
+                bool replaced = false;
+                for (ControlProfile& b : profiles) if (b.Id == p.Id) { b = p; replaced = true; }
+                if (!replaced) profiles.push_back(p);
+            }
+            closedir(d);
+        }
+    }
+    auto selectProfile = [&](const std::string& id) {
+        for (int i = 0; i < (int)profiles.size(); i++) if (profiles[i].Id == id) { profileIdx = i; return true; }
+        return false;
+    };
     auto saveUi = [&]() {
         FILE* f = fopen((std::string(ConfigDir) + "/ui.txt").c_str(), "w");
         if (!f) return;
         fprintf(f, "%sfilter=%d\nshowfps=%d\n", disp.Write().c_str(), filter, showFps ? 1 : 0);
-        for (const char* k : {"cpu", "threaded", "gpu", "gpuscale"})
+        for (const char* k : {"cpu", "threaded", "gpu", "gpuscale", "controls"})
             if (ui0.count(k)) fprintf(f, "%s=%s\n", k, ui0[k].c_str());
         fclose(f);
         if (gameUiFile.empty()) return;
         f = fopen((std::string(ConfigDir) + "/" + gameUiFile).c_str(), "w");
         if (!f) return;
         fprintf(f, "cpu=%d\nthreaded=%d\ngpu=%d\ngpuscale=%d\n%s", autoClock ? 0 : overclockMHz, threaded3d ? 1 : 0, useGpu ? 1 : 0, gpuScale, disp.Write().c_str());
+        if (!controlsId.empty()) fprintf(f, "controls=%s\n", controlsId.c_str());
         fclose(f);
     };
 
@@ -650,6 +658,17 @@ int main(int argc, char** argv)
         if (!cfg.count("gpuscale") && gu.count("gpuscale")) gpuScale = std::clamp(atoi(gu["gpuscale"].c_str()), 1, 3);
         if (!cfg.count("threaded3d") && gu.count("threaded")) threaded3d = gu["threaded"] == "1";
         disp.Read(gu);
+        // controls: config.txt > the game's choice > automatic (known games) > default of ui.txt > standard
+        {
+            RomInfo info;
+            ReadRomInfo(romPath, info, 1);
+            std::string autoId = AutoProfileFor(info.Title);
+            if (cfg.count("controls") && selectProfile(cfg["controls"])) controlsId = cfg["controls"];
+            else if (gu.count("controls") && selectProfile(gu["controls"])) controlsId = gu["controls"];
+            else if (!autoId.empty() && selectProfile(autoId)) {}
+            else if (!(ui0.count("controls") && selectProfile(ui0["controls"]))) selectProfile("standard");
+            logf("controls: %s%s\n", profiles[profileIdx].Id.c_str(), controlsId.empty() ? (autoId.empty() ? " (default)" : " (automatic for this game)") : "");
+        }
         if (!cfg.count("overclock") && gu.count("cpu"))
         {
             int mhz = atoi(gu["cpu"].c_str());
@@ -1003,6 +1022,12 @@ int main(int argc, char** argv)
             {
                 items.push_back({"Reprendre", "", [&](int, bool act) { if (act) result = 0; }});
                 items.push_back({"Affichage", "", [&](int, bool act) { if (act) page = 1; }});
+                items.push_back({"Commandes", profiles[profileIdx].Name, [&](int dir, bool) {
+                    int n = (int)profiles.size();
+                    profileIdx = (profileIdx + (dir < 0 ? n - 1 : 1)) % n;
+                    controlsId = profiles[profileIdx].Id;   // remembered for this game (held keys are reset when the menu closes)
+                    saveUi();
+                }});
                 items.push_back({"Fréquence CPU", (autoClock ? "auto (" + std::to_string(overclockMHz) + " MHz)" : std::to_string(overclockMHz) + " MHz"), [&](int dir, bool) {
                     const int steps[] = {0, 1020, 1224, 1581, 1785};   // 0 = auto
                     int idx = 0;
@@ -1115,7 +1140,9 @@ int main(int argc, char** argv)
     padConfigureInput(8, HidNpadStyleSet_NpadStandard);
     padInitializeAny(&stickPad);
     int cursorShownFrames = 0;
-    bool cursorTouching = false;
+    bool cursorTouching = false;   // R3 held (touches in cursor mode)
+    StickTouch stickTouch;
+    bool stickTouchDown = false;   // the right stick holds the stylus down
     std::vector<s16> audioBuf(2048 * 2);
 
     using clock = std::chrono::steady_clock;
@@ -1202,7 +1229,9 @@ int main(int argc, char** argv)
                         pad = 0;
                         keys = 0;
                         autoFrameCount = 0;   // the menu and the states it saves/loads stall frames
-                        if (cursorTouching) { cursorTouching = false; if (!touching) nds->ReleaseScreen(); }
+                        cursorTouching = false;
+                        stickTouch.Reset();
+                        if (stickTouchDown) { stickTouchDown = false; if (!touching) nds->ReleaseScreen(); }
                         if (choice == 1) relaunch = true;
                         if (choice != 0) running = false;
                     }
@@ -1226,7 +1255,7 @@ int main(int argc, char** argv)
                 }
                 else
                 {
-                    keys |= DSKeyForButton(b);
+                    keys |= profiles[profileIdx].MaskFor(b);
                     if (b == 5) cursorTouching = true;
                 }
             }
@@ -1234,12 +1263,8 @@ int main(int argc, char** argv)
             {
                 int b = ev.jbutton.button;
                 if (b < 32) pad &= ~(1u << b);
-                keys &= ~DSKeyForButton(b);
-                if (b == 5 && cursorTouching)
-                {
-                    cursorTouching = false;
-                    if (!touching) nds->ReleaseScreen();
-                }
+                keys &= ~profiles[profileIdx].MaskFor(b);
+                if (b == 5) cursorTouching = false;   // the stylus is lifted by the right stick code below
             }
             else if (ev.type == SDL_FINGERDOWN || ev.type == SDL_FINGERMOTION)
             {
@@ -1254,34 +1279,35 @@ int main(int argc, char** argv)
             }
             else if (ev.type == SDL_FINGERUP && touching)
             {
-                if (!cursorTouching) nds->ReleaseScreen();
+                if (!stickTouchDown) nds->ReleaseScreen();
                 touching = false;
             }
         }
 
         padUpdate(&stickPad);
+        const ControlProfile& prof = profiles[profileIdx];
         {
             HidAnalogStickState ls = padGetStickPos(&stickPad, 0), rs = padGetStickPos(&stickPad, 1);
             stickRX = rs.x;
-            stickRY = -rs.y;   // libnx: up is positive
-            stickKeys = (ls.x < -16000 ? 1u << 5 : 0) | (ls.x > 16000 ? 1u << 4 : 0) | (ls.y > 16000 ? 1u << 6 : 0) | (ls.y < -16000 ? 1u << 7 : 0);
+            stickRY = rs.y;   // libnx: up is positive
+            stickKeys = !prof.LeftStickDpad ? 0 : (ls.x < -16000 ? 1u << 5 : 0) | (ls.x > 16000 ? 1u << 4 : 0) | (ls.y > 16000 ? 1u << 6 : 0) | (ls.y < -16000 ? 1u << 7 : 0);
         }
-        // right stick: dead zone, then a speed that grows with the square of the deflection (up to 3.5 DS pixels per frame)
-        auto stickSpeed = [](int v) { float f = (std::abs(v) - 6000) / 26767.f; return f <= 0 ? 0.f : (v < 0 ? -3.5f : 3.5f) * f * f; };
-        float cdx = stickSpeed(stickRX), cdy = stickSpeed(stickRY);
-        if (cdx != 0 || cdy != 0)
+        // right stick (profile): cursor + R3, stylus where the stick points, or stylus dragged to aim
         {
-            cursorX = std::clamp(cursorX + cdx, 0.f, 255.f);
-            cursorY = std::clamp(cursorY + cdy, 0.f, 191.f);
-            cursorShownFrames = 180;
+            StickTouch::Out st = stickTouch.Update(prof.RightStick, stickRX / 32767.f, stickRY / 32767.f, cursorTouching, prof.Sensitivity, prof.InvertY);
+            cursorX = st.X; cursorY = st.Y;
+            cursorShownFrames = st.ShowMarker && !touching ? 1 : 0;
+            if (st.Touch && !touching)
+            {
+                nds->TouchScreen(st.X, st.Y);
+                stickTouchDown = true;
+            }
+            else if (!st.Touch && stickTouchDown)
+            {
+                stickTouchDown = false;
+                if (!touching) nds->ReleaseScreen();
+            }
         }
-        if (cursorTouching)
-        {
-            nds->TouchScreen((int)cursorX, (int)cursorY);
-            cursorShownFrames = 180;
-        }
-        else if (cursorShownFrames > 0)
-            cursorShownFrames--;
 
         // L + R + START + SELECT goes to the game: many DS games use it to go back to their title screen (soft reset).
         // It used to quit the emulator; quitting is now ZL + ZR + B or the menu
@@ -1360,7 +1386,7 @@ int main(int argc, char** argv)
                 SDL_Rect inner[2] {{cx - 10, cy - 1, 21, 3}, {cx - 1, cy - 10, 3, 21}};
                 GfxColor(renderer, 0, 0, 0, 255);
                 for (const SDL_Rect& r : outline) GfxFill(renderer, &r);
-                GfxColor(renderer, 255, cursorTouching ? 60 : 255, cursorTouching ? 60 : 255, 255);
+                GfxColor(renderer, 255, stickTouchDown ? 60 : 255, stickTouchDown ? 60 : 255, 255);
                 for (const SDL_Rect& r : inner) GfxFill(renderer, &r);
             }
         }

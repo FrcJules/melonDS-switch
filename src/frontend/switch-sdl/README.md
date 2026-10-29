@@ -14,6 +14,9 @@ directed and tested on real hardware by FrcJules. The emulation core is melonDS 
   lowered back when there is headroom (measured CPU load).
 - **Touch screen without touching** (TV mode): the right stick moves a cursor on the bottom screen, hold the right stick
   click (R3) to touch (drag and handwriting work). The left stick works as the D-pad.
+- **Control profiles**: remap every DS button, choose what each stick does; a default profile, one per game, and
+  built-in profiles chosen automatically for Metroid Prime Hunters (aim with the right stick, shoot with R) and Star Fox
+  Command (the right stick is the stylus). Edited from the home screen (Settings).
 - **Per-game settings** (renderer, resolution, CPU) saved in `<rom>.ui`; 4th generation Pokémon start in software
   rendering (avoids the dotted black lines of the GPU renderer); games that change the display mid-frame (e.g.
   Professor Layton videos) switch to software rendering automatically.
@@ -42,7 +45,7 @@ there automatically).
 | | |
 |---|---|
 | D-pad / left stick, A B X Y, L R, + (Start), - (Select) | DS buttons |
-| Right stick + R3 held | touch the bottom screen |
+| Right stick | touch screen, depending on the control profile: cursor + R3 to touch (standard), direct stylus (the stick position is the stylus, Star Fox Command), aim (the stylus is dragged like a mouse, Metroid Prime Hunters) |
 | ZL + ZR + PLUS | menu (display, CPU, renderer, resolution, states, change game, quit) |
 | ZL + ZR held, then X / Y / left / right | save state / load state / slot 1-4 |
 | ZL + ZR held, then up / MINUS | next layout (vertical, horizontal, hybrid) / swap the screens (hybrid: big screen top or bottom) |

@@ -28,6 +28,7 @@
 
 #include <switch.h>
 
+#include "Controls.h"
 #include "Layout.h"
 #include "RomInfo.h"
 #include "Ui.h"
@@ -329,6 +330,167 @@ static void DrawDetails(Gfx* g, Entry* e, const std::string& configDir)
 }
 
 // settings of one game: <rom>.ui, written with every value (like the in-game menu does)
+// ---- control profiles: built-in ones, overridden or completed by configDir/controls/<id>.txt ----
+static std::vector<ControlProfile> LoadProfiles(const std::string& configDir)
+{
+    std::vector<ControlProfile> profiles = BuiltinProfiles();
+    std::string dir = configDir + "/controls";
+    if (DIR* d = opendir(dir.c_str()))
+    {
+        std::vector<std::string> names;
+        while (dirent* e = readdir(d))
+        {
+            std::string n = e->d_name;
+            if (n.size() > 4 && n.compare(n.size() - 4, 4, ".txt") == 0) names.push_back(n);
+        }
+        closedir(d);
+        std::sort(names.begin(), names.end());
+        for (const std::string& n : names)
+        {
+            ControlProfile p;
+            p.Id = n.substr(0, n.size() - 4);
+            p.Name = p.Id;
+            for (const ControlProfile& b : profiles) if (b.Id == p.Id) p = b;
+            p.Read(ReadKeyValues(dir + "/" + n));
+            bool replaced = false;
+            for (ControlProfile& b : profiles) if (b.Id == p.Id) { b = p; replaced = true; }
+            if (!replaced) profiles.push_back(p);
+        }
+    }
+    return profiles;
+}
+
+static bool SaveProfile(const std::string& configDir, const ControlProfile& p)
+{
+    std::string dir = configDir + "/controls";
+    mkdir(dir.c_str(), 0777);
+    FILE* f = fopen((dir + "/" + p.Id + ".txt").c_str(), "w");
+    if (!f) return false;
+    std::string s = p.Write();
+    fwrite(s.data(), 1, s.size(), f);
+    return fclose(f) == 0;
+}
+
+static std::string ProfileName(const std::vector<ControlProfile>& profiles, const std::string& id)
+{
+    for (const ControlProfile& p : profiles) if (p.Id == id) return p.Name;
+    return "Standard";
+}
+
+// editing one profile: each DS button (A then press the Switch button, or left/right), sticks, sensitivity
+static void ProfileEditor(Gfx* g, const std::string& configDir, ControlProfile& p, bool& deleted)
+{
+    ListState st;
+    std::string note;
+    int capture = -1;   // DS key waiting for a Switch button
+    bool done = false;
+    while (!done && appletMainLoop())
+    {
+        auto save = [&]() { note = SaveProfile(configDir, p) ? "Enregistré." : "Impossible d'écrire le profil."; };
+        std::vector<Item> items;
+        auto header = [&](const char* t) { Item it; it.Label = t; it.Header = true; items.push_back(it); };
+        header("Boutons de la DS");
+        static const int order[DsKeyCount] = {DsA, DsB, DsX, DsY, DsL, DsR, DsStart, DsSelect, DsUp, DsDown, DsLeft, DsRight};
+        for (int k : order)
+            items.push_back({std::string("DS ") + DsKeyName(k), capture == k ? "appuyez sur un bouton..." : SwButtonName(p.Button[k]), [&, k](int dir, bool act) {
+                if (act) { capture = k; return; }
+                p.Button[k] = (p.Button[k] + 1 + (dir < 0 ? SwButtonCount : 2)) % (SwButtonCount + 1) - 1;   // -1 (none) .. 15
+                save();
+            }});
+        header("Sticks");
+        items.push_back({"Stick gauche", p.LeftStickDpad ? "croix" : "rien", [&](int, bool) { p.LeftStickDpad = !p.LeftStickDpad; save(); }});
+        items.push_back({"Stick droit", RightStickName(p.RightStick), [&](int dir, bool) { p.RightStick = (p.RightStick + (dir < 0 ? RightModeCount - 1 : 1)) % RightModeCount; save(); }});
+        items.push_back({"Vitesse (curseur, visée)", std::to_string(p.Sensitivity), [&](int dir, bool) { p.Sensitivity = dir ? std::clamp(p.Sensitivity + dir, 1, 10) : p.Sensitivity % 10 + 1; save(); }});
+        items.push_back({"Visée : axe vertical inversé", p.InvertY ? "oui" : "non", [&](int, bool) { p.InvertY = !p.InvertY; save(); }});
+        if (IsBuiltinProfile(p.Id))
+            items.push_back({"Rétablir ce profil d'origine", "", [&](int, bool act) {
+                if (!act) return;
+                remove((configDir + "/controls/" + p.Id + ".txt").c_str());
+                for (const ControlProfile& b : BuiltinProfiles()) if (b.Id == p.Id) p = b;
+                note = "Profil d'origine rétabli.";
+            }});
+        else
+            items.push_back({"Supprimer ce profil", "", [&](int, bool act) {
+                if (!act) return;
+                remove((configDir + "/controls/" + p.Id + ".txt").c_str());
+                deleted = true;
+                done = true;
+            }});
+        items.push_back({"Retour", "", [&](int, bool act) { if (act) done = true; }});
+
+        DrawFrame(g, "Commandes : " + p.Name, capture >= 0 ? std::vector<std::string>{"Appuyez sur le bouton à utiliser pour DS " + std::string(DsKeyName(capture))}
+                                                       : std::vector<std::string>{UI_A " Choisir le bouton", UI_DPAD_LR " Changer", UI_B " Retour"});
+        DrawList(g, items, st, ListX, ListY, 1200, 9, 58);
+        DrawText(g, note.empty() ? UI_ZL " + " UI_ZR " ensemble restent les raccourcis de l'émulateur" : note, 60, 666, note.empty() ? TextDim : AccentText, Small, 560);
+        GfxPresent(g);
+        Trim();
+        Input in;
+        if (!Poll(in, 100)) continue;
+        if (capture >= 0)
+        {
+            // any Switch button (the left stick counts as the D-pad)
+            if (in.Button >= 0 && in.Button < SwButtonCount)
+            {
+                p.Button[capture] = in.Button;
+                capture = -1;
+                save();
+            }
+            continue;
+        }
+        if (in.Button == BtnB) done = true;
+        else ListInput(items, st, in, ListX, ListY, 1200, 9, 58);
+    }
+}
+
+// list of the profiles: edit one, or create a new one (copy of the standard profile)
+static void ProfilesPage(Gfx* g, const std::string& configDir)
+{
+    ListState st;
+    bool done = false;
+    while (!done && appletMainLoop())
+    {
+        std::vector<ControlProfile> profiles = LoadProfiles(configDir);
+        std::vector<Item> items;
+        for (ControlProfile& p : profiles)
+            items.push_back({p.Name, RightStickName(p.RightStick), [&, id = p.Id](int, bool act) {
+                if (!act) return;
+                for (ControlProfile& q : profiles)
+                    if (q.Id == id)
+                    {
+                        bool deleted = false;
+                        ProfileEditor(g, configDir, q, deleted);
+                    }
+            }});
+        items.push_back({"Nouveau profil", "copie du profil Standard", [&](int, bool act) {
+            if (!act) return;
+            int n = 1;
+            for (;;)
+            {
+                bool used = false;
+                for (const ControlProfile& p : profiles) if (p.Id == "custom" + std::to_string(n)) used = true;
+                if (!used) break;
+                n++;
+            }
+            ControlProfile p = BuiltinProfiles()[0];
+            p.Id = "custom" + std::to_string(n);
+            p.Name = "Perso " + std::to_string(n);
+            SaveProfile(configDir, p);
+            bool deleted = false;
+            ProfileEditor(g, configDir, p, deleted);
+        }});
+        items.push_back({"Retour", "", [&](int, bool act) { if (act) done = true; }});
+        DrawFrame(g, "Profils de commandes", {UI_A " Modifier", UI_B " Retour"});
+        DrawList(g, items, st, ListX, ListY, 1200, 9, 58);
+        DrawText(g, "Metroid Prime Hunters et Star Fox Command prennent automatiquement leur profil.", 60, 666, TextDim, Small, 700);
+        GfxPresent(g);
+        Trim();
+        Input in;
+        if (!Poll(in, 100)) continue;
+        if (in.Button == BtnB) done = true;
+        else ListInput(items, st, in, ListX, ListY, 1200, 9, 58);
+    }
+}
+
 static void GameSettings(Gfx* g, Entry& e, const std::string& configDir, const KeyValues& general)
 {
     LoadInfo(e, configDir);
@@ -346,11 +508,28 @@ static void GameSettings(Gfx* g, Entry& e, const std::string& configDir, const K
             KeyValues out;
             for (const char* k : {"cpu", "threaded", "gpu", "gpuscale", "layout", "sizing", "swap", "rotation", "intscale", "gap", "autotop"})
                 out[k] = Value(kv, &fallback, *FindDef(k));
+            if (kv.count("controls")) out["controls"] = kv["controls"];
             kv = out;
             note = WriteKeyValues(file, out) ? "" : "Impossible d'écrire " + file;
             e.HasGameSettings = true;
         };
         std::vector<Item> items = SettingItems(kv, &fallback, false, save);
+        {
+            // controls: automatic (built-in profile for known games, else the default one) or one profile
+            std::vector<ControlProfile> profiles = LoadProfiles(configDir);
+            Item h; h.Label = "Commandes"; h.Header = true; items.push_back(h);
+            std::string cur = kv.count("controls") ? kv["controls"] : "";
+            std::string autoId = AutoProfileFor(e.Info->Title);
+            std::string shown = cur.empty() ? "automatique (" + ProfileName(profiles, autoId.empty() ? (general.count("controls") ? general.at("controls") : "standard") : autoId) + ")" : ProfileName(profiles, cur);
+            items.push_back({"Profil de commandes", shown, [&, profiles, cur](int dir, bool) {
+                // cycle: automatic, then every profile
+                int n = (int)profiles.size(), idx = -1;
+                for (int i = 0; i < n; i++) if (profiles[i].Id == cur) idx = i;
+                idx = ((idx + 1) + (dir < 0 ? n : 1)) % (n + 1) - 1;
+                if (idx < 0) kv.erase("controls"); else kv["controls"] = profiles[idx].Id;
+                save();
+            }});
+        }
         Item reset;
         reset.Label = "Revenir aux réglages généraux";
         reset.Do = [&](int, bool act) {
@@ -381,7 +560,7 @@ static void DrawHelp(Gfx* g)
     static const Line lines[] = {
         {UI_DPAD " / " UI_LSTICK "   " UI_A " " UI_B " " UI_X " " UI_Y "   " UI_L " " UI_R "   " UI_PLUS " " UI_MINUS, "Boutons de la DS (" UI_PLUS " = Start, " UI_MINUS " = Select)"},
         {"Toucher l'écran", "Écran tactile de la DS (mode portable)"},
-        {UI_RSTICK " puis " UI_RSTICK " enfoncé", "Curseur tactile sans toucher l'écran (mode TV)"},
+        {UI_RSTICK, "Stylet, selon le profil : curseur + clic, stylet direct (Star Fox) ou visée (Metroid)"},
         {UI_ZL " + " UI_ZR " + " UI_PLUS, "Menu : affichage, rendu, états, changer de jeu, quitter"},
         {UI_ZL " + " UI_ZR " + " UI_X " / " UI_Y, "Sauvegarder / charger l'état"},
         {UI_ZL " + " UI_ZR " + " UI_DPAD_LR, "Choisir l'emplacement d'état (1 à 4)"},
@@ -841,6 +1020,18 @@ HomeChoice RunHome(Gfx* g, const std::string& configDir, const std::string& star
                     note = "Dossier retiré de la bibliothèque.";
                 }});
             for (Item& it : SettingItems(general, nullptr, true, save)) settingItems.push_back(it);
+            {
+                Item ch; ch.Label = "Commandes"; ch.Header = true; settingItems.push_back(ch);
+                std::vector<ControlProfile> profiles = LoadProfiles(configDir);
+                std::string cur = general.count("controls") ? general["controls"] : "standard";
+                settingItems.push_back({"Profil par défaut", ProfileName(profiles, cur), [&, profiles, cur](int dir, bool) {
+                    int n = (int)profiles.size(), idx = 0;
+                    for (int i = 0; i < n; i++) if (profiles[i].Id == cur) idx = i;
+                    general["controls"] = profiles[(idx + (dir < 0 ? n - 1 : 1)) % n].Id;
+                    save();
+                }});
+                settingItems.push_back({"Modifier les profils de commandes", "", [&](int, bool act) { if (act) ProfilesPage(g, configDir); }});
+            }
             DrawList(g, settingItems, settingsSt, ListX, ListY, 1200, 9, 58);
             footer = note.empty() ? "Un jeu peut avoir ses propres réglages : sa page, puis « Réglages de ce jeu »" : note;
         }
