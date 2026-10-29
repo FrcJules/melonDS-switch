@@ -73,7 +73,10 @@ Result: `build-switch/src/frontend/switch-sdl/melonDS-switch.nro`.
 ## Core changes
 Besides the frontend: geometry and JIT speed-ups (output identical, checked with fixed-rate audio recordings), a
 GLES 3 path for the OpenGL renderer, and `NDSCart/CartRetailIR.cpp`: the IR cartridge returned an uninitialised value
-for IR commands that are not emulated (also fixed upstream in pending PR #2727).
+for IR commands that are not emulated (also fixed upstream in pending PR #2727). The registers of the hardware divider and
+square root unit are now reset and saved in save states (state version 14.1; older states still load): they were left
+as leftover memory, so a game resuming a division after a state load could behave differently from build to build.
+States saved by 0.3 cannot be loaded by 0.2.
 
 ## Contact
 FrcJules: Discord `rateur42`, e-mail rateur42@gmail.com. Bug reports: GitHub issues of this repository.
