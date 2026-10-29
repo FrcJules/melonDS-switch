@@ -548,6 +548,7 @@ int main(int argc, char** argv)
         if (!strcmp(argv[i], "--browse")) wantBrowse = true;
     std::string romPath = cfg.count("rom") ? cfg["rom"] : "";
     const std::string configRom = romPath;
+    int homeLoadSlot = -2;   // state chosen on the game page of the home screen (-2: as configured)
     if (wantBrowse || romPath.empty() || !FileExists(romPath))
     {
         std::string startDir = cfg.count("romdir") ? cfg["romdir"] : "";
@@ -556,7 +557,9 @@ int main(int argc, char** argv)
             struct stat st;
             startDir = stat("sdmc:/roms/nds", &st) == 0 ? "sdmc:/roms/nds" : "sdmc:/";
         }
-        romPath = RunHome(renderer, ConfigDir, startDir, SWITCH_APP_VERSION);
+        HomeChoice choice = RunHome(renderer, ConfigDir, startDir, SWITCH_APP_VERSION);
+        romPath = choice.Path;
+        homeLoadSlot = choice.LoadSlot;
         if (romPath.empty())
         {
             logf("no ROM chosen\n");
@@ -822,18 +825,26 @@ int main(int argc, char** argv)
         remove(path.c_str());
         return rename(tmp.c_str(), path.c_str()) == 0;
     };
+    // screenshot of both screens saved with each state (<state>.thumb, 128x192), shown on the game page
+    std::function<std::vector<u8>()> captureThumb;
     auto saveState = [&](int s, bool background) -> bool {
         Savestate st;
         if (st.Error) return false;
         if (!nds->DoSavestate(&st) || st.Error) return false;
         auto data = std::make_shared<std::vector<u8>>((u8*)st.Buffer(), (u8*)st.Buffer() + st.Length());
+        auto thumb = std::make_shared<std::vector<u8>>(captureThumb ? captureThumb() : std::vector<u8>());
         if (stateWriter.joinable()) stateWriter.join();   // one write at a time
         cachedSlot = s;
         cachedState = data;
         std::string path = statePath(s);
-        if (!background) return writeStateFile(path, *data);
-        stateWriter = std::thread([path, data, s, writeStateFile, logf]() {
-            if (!writeStateFile(path, *data)) logf("state slot %d: writing the file FAILED\n", s);
+        auto writeAll = [path, data, thumb, writeStateFile]() {
+            bool ok = writeStateFile(path, *data);
+            if (ok && thumb->size() == 128 * 192 * 4) WriteThumb(path + ".thumb", *thumb, 128, 192);
+            return ok;
+        };
+        if (!background) return writeAll();
+        stateWriter = std::thread([writeAll, s, logf]() {
+            if (!writeAll()) logf("state slot %d: writing the file FAILED\n", s);
         });
         return true;
     };
@@ -871,9 +882,10 @@ int main(int argc, char** argv)
     };
     const bool autosave = !cfg.count("autosave") || cfg["autosave"] != "0";
     bool stateLoaded = false;   // auto CPU mode: a state often lands in the middle of the action, go to 1785 MHz at once
-    if (!cfg.count("autoload") || cfg["autoload"] != "0")
+    if (homeLoadSlot >= -1 ? homeLoadSlot >= 0 : (!cfg.count("autoload") || cfg["autoload"] != "0"))
     {
-        int loadSlot = cfg.count("loadslot") ? std::clamp(atoi(cfg["loadslot"].c_str()), 0, 4) : 0;   // slot loaded at start (0 = the automatic one)
+        // slot loaded at start (0 = the automatic one): the one chosen on the game page, else loadslot= of config.txt
+        int loadSlot = homeLoadSlot >= 0 ? homeLoadSlot : cfg.count("loadslot") ? std::clamp(atoi(cfg["loadslot"].c_str()), 0, 4) : 0;
         FILE* f = fopen(statePath(loadSlot).c_str(), "rb");
         if (f)
         {
@@ -933,6 +945,44 @@ int main(int argc, char** argv)
             if (gpuTex) GfxCopyArray(renderer, gpuTex, q.Screen, q.Mtx, filter != 0);
             else GfxCopyScreen(renderer, &tex, q.Screen, q.Mtx);
         }
+    };
+
+    captureThumb = [&]() -> std::vector<u8> {
+        // both screens drawn at 1x into an offscreen 1280x720 target (same drawing path as the display), read back
+        // (a short GPU stall, only when a state is saved), then halved to 128x192
+        static GLuint fbo = 0, fboTex = 0;
+        if (!fbo)
+        {
+            glGenTextures(1, &fboTex);
+            glBindTexture(GL_TEXTURE_2D, fboTex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1280, 720, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+            glGenFramebuffers(1, &fbo);
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fboTex, 0);
+        }
+        GfxResetState(renderer);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, 1280, 720);
+        glClearColor(0, 0, 0, 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        const float top[6] = {1, 0, 0, 1, 0, 0}, bot[6] = {1, 0, 0, 1, 0, 192};
+        if (gpuTex) { GfxCopyArray(renderer, gpuTex, 0, top, true); GfxCopyArray(renderer, gpuTex, 1, bot, true); }
+        else { GfxCopyScreen(renderer, &tex, 0, top); GfxCopyScreen(renderer, &tex, 1, bot); }
+        std::vector<u8> full(256 * 384 * 4);
+        glReadPixels(0, 720 - 384, 256, 384, GL_RGBA, GL_UNSIGNED_BYTE, full.data());
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        // GL rows go bottom-up: flip while averaging 2x2 blocks
+        std::vector<u8> out(128 * 192 * 4);
+        for (int y = 0; y < 192; y++)
+            for (int x = 0; x < 128; x++)
+                for (int c = 0; c < 4; c++)
+                {
+                    int sy = 383 - y * 2;
+                    int v = full[((sy * 256) + x * 2) * 4 + c] + full[((sy * 256) + x * 2 + 1) * 4 + c]
+                          + full[(((sy - 1) * 256) + x * 2) * 4 + c] + full[(((sy - 1) * 256) + x * 2 + 1) * 4 + c];
+                    out[(y * 128 + x) * 4 + c] = c == 3 ? 255 : (u8)(v / 4);
+                }
+        return out;
     };
 
     // in-game menu (ZL + ZR + PLUS): emulation is paused. Returns 0 = resume, 1 = change ROM, 2 = quit

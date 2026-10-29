@@ -452,15 +452,20 @@ void Message(Gfx* g, const std::string& title, const std::string& body, const st
 
 void DrawIcon(Gfx* g, const std::string& key, const uint32_t* rgba, int x, int y, int size)
 {
+    DrawImage(g, key, rgba, 32, 32, x, y, size, size);
+}
+
+void DrawImage(Gfx* g, const std::string& key, const uint32_t* rgba, int w, int h, int x, int y, int dw, int dh, bool smooth)
+{
     auto it = IconCache.find(key);
     if (it == IconCache.end())
     {
-        GfxTex t = GfxTexCreate(32, 32, false);
+        GfxTex t = GfxTexCreate(w, h, smooth);
         glBindTexture(GL_TEXTURE_2D, t.Id);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 32, 32, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
         it = IconCache.emplace(key, t).first;
     }
-    SDL_Rect d {x, y, size, size};
+    SDL_Rect d {x, y, dw, dh};
     bool wasBlend = g->Blend;
     GfxBlendMode(g, true);
     GfxCopy(g, &it->second, nullptr, &d, 2);

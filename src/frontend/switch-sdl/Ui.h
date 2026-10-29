@@ -105,6 +105,9 @@ void Message(Gfx* g, const std::string& title, const std::string& body, const st
 
 // icon of a game (32x32 RGBA) drawn scaled; textures are cached by key
 void DrawIcon(Gfx* g, const std::string& key, const uint32_t* rgba, int x, int y, int size);
+// any RGBA image (w x h), drawn at (x, y) with size dw x dh; textures are cached by key (change the key when the image
+// changes)
+void DrawImage(Gfx* g, const std::string& key, const uint32_t* rgba, int w, int h, int x, int y, int dw, int dh, bool smooth = false);
 void ForgetIcons();
 
 }

@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <dirent.h>
 
 #include <algorithm>
@@ -182,6 +183,8 @@ static std::vector<Item> SettingItems(KeyValues& kv, const KeyValues* fallback, 
 struct Entry
 {
     std::string Path, Name;
+    std::string Title, Subtitle, Code;   // from the library cache (before the ROM is read)
+    bool Favorite = false;
     bool Dir = false, Up = false;
     bool Loaded = false;
     bool HasGameSettings = false;
@@ -398,15 +401,347 @@ static void DrawHelp(Gfx* g)
                    "Réglages, sauvegardes et états : sdmc:/switch/melonDS-Switch/.", 60, y + 10, 1160, TextDim, Small);
 }
 
-std::string RunHome(Gfx* g, const std::string& configDir, const std::string& startDir, const std::string& version)
+bool WriteThumb(const std::string& path, const std::vector<unsigned char>& rgba, int w, int h)
+{
+    FILE* f = fopen(path.c_str(), "wb");
+    if (!f) return false;
+    uint16_t dims[2] = {(uint16_t)w, (uint16_t)h};
+    bool ok = fwrite("MDTH", 1, 4, f) == 4 && fwrite(dims, 2, 2, f) == 2 && fwrite(rgba.data(), 1, rgba.size(), f) == rgba.size();
+    return (fclose(f) == 0) && ok;
+}
+
+bool ReadThumb(const std::string& path, std::vector<uint32_t>& rgba, int& w, int& h)
+{
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    char magic[4];
+    uint16_t dims[2];
+    bool ok = fread(magic, 1, 4, f) == 4 && !memcmp(magic, "MDTH", 4) && fread(dims, 2, 2, f) == 2 && dims[0] && dims[1] && dims[0] <= 512 && dims[1] <= 512;
+    if (ok)
+    {
+        w = dims[0]; h = dims[1];
+        rgba.resize((size_t)w * h);
+        ok = fread(rgba.data(), 4, rgba.size(), f) == rgba.size();
+    }
+    fclose(f);
+    return ok;
+}
+
+// ---- library: every game of the library folders (and their subfolders), titles cached in library.txt ----
+static bool IsRomName(const std::string& n)
+{
+    std::string l = LowerCase(n);
+    return l.size() > 4 && (l.compare(l.size() - 4, 4, ".nds") == 0 || l.compare(l.size() - 4, 4, ".srl") == 0 || l.compare(l.size() - 4, 4, ".dsi") == 0);
+}
+
+static void ScanDir(const std::string& dir, int depth, std::vector<std::string>& out)
+{
+    DIR* d = opendir(dir.c_str());
+    if (!d) return;
+    std::vector<std::string> subdirs;
+    while (dirent* e = readdir(d))
+    {
+        std::string n = e->d_name;
+        if (n.empty() || n[0] == '.') continue;
+        std::string p = dir.back() == '/' ? dir + n : dir + "/" + n;
+        struct stat st;
+        bool isDir = e->d_type == DT_DIR || (e->d_type == DT_UNKNOWN && stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode));
+        if (isDir) { if (depth > 0) subdirs.push_back(p); }
+        else if (IsRomName(n)) out.push_back(p);
+    }
+    closedir(d);
+    for (const std::string& s : subdirs) ScanDir(s, depth - 1, out);
+}
+
+static std::vector<std::string> SplitList(const std::string& s)
+{
+    std::vector<std::string> out;
+    size_t p = 0;
+    while (p < s.size())
+    {
+        size_t q = s.find('|', p);
+        if (q == std::string::npos) q = s.size();
+        if (q > p) out.push_back(s.substr(p, q - p));
+        p = q + 1;
+    }
+    return out;
+}
+
+static std::string JoinList(const std::vector<std::string>& v)
+{
+    std::string s;
+    for (size_t i = 0; i < v.size(); i++) s += (i ? "|" : "") + v[i];
+    return s;
+}
+
+struct LibCacheEntry { long long Size = 0, MTime = 0; std::string Code, Title, Subtitle; };
+
+static std::map<std::string, LibCacheEntry> ReadLibCache(const std::string& file)
+{
+    std::map<std::string, LibCacheEntry> m;
+    FILE* f = fopen(file.c_str(), "r");
+    if (!f) return m;
+    char line[2048];
+    while (fgets(line, sizeof(line), f))
+    {
+        std::string s = line;
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+        std::vector<std::string> col;
+        size_t p = 0;
+        for (;;)
+        {
+            size_t q = s.find('\t', p);
+            col.push_back(s.substr(p, q == std::string::npos ? std::string::npos : q - p));
+            if (q == std::string::npos) break;
+            p = q + 1;
+        }
+        if (col.size() < 6) continue;
+        LibCacheEntry e;
+        e.Size = atoll(col[1].c_str()); e.MTime = atoll(col[2].c_str());
+        e.Code = col[3]; e.Title = col[4]; e.Subtitle = col[5];
+        m[col[0]] = e;
+    }
+    fclose(f);
+    return m;
+}
+
+static std::string NoTabs(std::string s)
+{
+    for (auto& c : s) if (c == '\t' || c == '\n') c = ' ';
+    return s;
+}
+
+// library entries, favourites first, then by title. Titles come from the cache when the file did not change.
+static std::vector<Entry> BuildLibrary(const std::vector<std::string>& dirs, const std::string& configDir, const std::vector<std::string>& favs)
+{
+    const std::string cacheFile = configDir + "/library.txt";
+    auto cache = ReadLibCache(cacheFile);
+    std::vector<std::string> paths;
+    for (const std::string& d : dirs) ScanDir(d, 4, paths);
+    std::sort(paths.begin(), paths.end());
+    paths.erase(std::unique(paths.begin(), paths.end()), paths.end());
+    std::vector<Entry> out;
+    std::map<std::string, LibCacheEntry> newCache;
+    for (const std::string& p : paths)
+    {
+        struct stat st;
+        if (stat(p.c_str(), &st) != 0) continue;
+        Entry e;
+        e.Path = p;
+        e.Name = BaseName(p);
+        auto it = cache.find(p);
+        LibCacheEntry ce;
+        if (it != cache.end() && it->second.Size == (long long)st.st_size && it->second.MTime == (long long)st.st_mtime)
+            ce = it->second;
+        else
+        {
+            RomInfo r;
+            ReadRomInfo(p, r, 2);
+            ce.Size = st.st_size; ce.MTime = st.st_mtime; ce.Code = r.GameCode; ce.Title = NoTabs(r.Title); ce.Subtitle = NoTabs(r.Subtitle);
+        }
+        newCache[p] = ce;
+        e.Title = ce.Title; e.Subtitle = ce.Subtitle; e.Code = ce.Code;
+        e.Favorite = std::find(favs.begin(), favs.end(), p) != favs.end();
+        out.push_back(e);
+    }
+    if (FILE* f = fopen(cacheFile.c_str(), "w"))
+    {
+        for (auto& kv : newCache)
+            fprintf(f, "%s\t%lld\t%lld\t%s\t%s\t%s\n", kv.first.c_str(), kv.second.Size, kv.second.MTime, kv.second.Code.c_str(), kv.second.Title.c_str(), kv.second.Subtitle.c_str());
+        fclose(f);
+    }
+    std::sort(out.begin(), out.end(), [](const Entry& a, const Entry& b) {
+        if (a.Favorite != b.Favorite) return a.Favorite;
+        return LowerCase(a.Title) < LowerCase(b.Title);
+    });
+    return out;
+}
+
+// ---- grid ----
+static const int GridX = 58, GridY = 100, TileW = 220, TileH = 262, TileGap = 16, GridCols = 5, GridRows = 2;
+
+static void DrawStar(Gfx* g, int x, int y)
+{
+    // small yellow diamond with a dark outline
+    for (int i = 0; i < 9; i++)
+    {
+        int w = (i < 5 ? i : 8 - i) * 2 + 1;
+        Fill(g, x + 8 - w / 2 - 1, y + i * 2 - 1, w + 2, 4, 30, 30, 30);
+    }
+    for (int i = 0; i < 9; i++)
+    {
+        int w = (i < 5 ? i : 8 - i) * 2 + 1;
+        Fill(g, x + 8 - w / 2, y + i * 2, w, 2, 255, 205, 60);
+    }
+}
+
+static void DrawGrid(Gfx* g, std::vector<Entry>& list, ListState& st, const std::string& configDir)
+{
+    int n = (int)list.size();
+    st.Sel = std::clamp(st.Sel, 0, std::max(n - 1, 0));
+    int selRow = st.Sel / GridCols;
+    if (selRow < st.Top) st.Top = selRow;
+    if (selRow >= st.Top + GridRows) st.Top = selRow - GridRows + 1;
+    int rows = (n + GridCols - 1) / GridCols;
+    st.Top = std::clamp(st.Top, 0, std::max(rows - GridRows, 0));
+    for (int r = 0; r < GridRows; r++)
+        for (int c = 0; c < GridCols; c++)
+        {
+            int i = (st.Top + r) * GridCols + c;
+            if (i >= n) break;
+            Entry& e = list[i];
+            int x = GridX + c * (TileW + TileGap), y = GridY + r * (TileH + TileGap);
+            bool sel = i == st.Sel;
+            if (sel)
+            {
+                Fill(g, x - 4, y - 4, TileW + 8, TileH + 8, 0, 200, 235);
+                Fill(g, x, y, TileW, TileH, 58, 64, 75);
+            }
+            else
+                Fill(g, x, y, TileW, TileH, 46, 50, 58);
+            LoadInfo(e, configDir);
+            if (e.Info->HasIcon) DrawIcon(g, e.Path, e.Info->Icon, x + 46, y + 16, 128);
+            else Fill(g, x + 46, y + 16, 128, 128, 60, 65, 74);
+            DrawWrapped(g, e.Info->Title, x + 12, y + 156, TileW - 24, sel ? Text : TextDim, Small, 2);
+            if (!e.Info->Subtitle.empty())
+            {
+                std::string pub = e.Info->Subtitle;
+                size_t dash = pub.rfind(" - ");
+                if (dash != std::string::npos) pub = pub.substr(dash + 3);
+                DrawText(g, pub, x + 12, y + 226, TextDim, Small, TileW - 24);
+            }
+            if (e.Favorite) DrawStar(g, x + TileW - 30, y + 10);
+        }
+    if (rows > GridRows)
+    {
+        int h = GridRows * (TileH + TileGap) - TileGap;
+        Fill(g, 1252, GridY, 4, h, 60, 65, 74);
+        Fill(g, 1252, GridY + h * st.Top / rows, 4, std::max(h * GridRows / rows, 20), 150, 158, 170);
+    }
+}
+
+// ---- game page: continue, start without a state, states 1-4 (with their screenshot), settings, favourite ----
+static std::string StateFile(const std::string& configDir, const std::string& rom, int slot)
+{
+    return configDir + "/" + StripExt(BaseName(rom)) + ".ss" + std::to_string(slot);
+}
+
+static std::string FileDate(const std::string& path)
+{
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) return "";
+    time_t t = st.st_mtime;
+    struct tm* tm = localtime(&t);
+    char buf[32];
+    if (!tm) return "";
+    strftime(buf, sizeof(buf), "%d/%m %H:%M", tm);
+    return buf;
+}
+
+// returns the state to load (-1 none, 0..4) or -3 to go back; favourite / recent changes are applied to the files
+static int GamePage(Gfx* g, Entry& e, const std::string& configDir, const KeyValues& general, bool fromRecent,
+                    std::vector<std::string>& favs, const std::string& homeFile, KeyValues& home, bool& changed)
+{
+    LoadInfo(e, configDir);
+    ListState st;
+    int result = -4;
+    while (result == -4 && appletMainLoop())
+    {
+        struct Action { int Slot; };   // slot of the state shown on the right (-1: none)
+        std::vector<Item> items;
+        std::vector<int> itemSlot;
+        auto add = [&](const std::string& label, const std::string& value, int slot, std::function<void(int, bool)> fn) {
+            items.push_back({label, value, fn});
+            itemSlot.push_back(slot);
+        };
+        bool hasAuto = IsFile(StateFile(configDir, e.Path, 0));
+        if (hasAuto)
+            add("Continuer", FileDate(StateFile(configDir, e.Path, 0)), 0, [&](int, bool act) { if (act) result = 0; });
+        add(hasAuto ? "Recommencer (sans charger d'état)" : "Jouer", "", -1, [&](int, bool act) { if (act) result = -1; });
+        for (int s = 1; s <= 4; s++)
+        {
+            std::string f = StateFile(configDir, e.Path, s);
+            if (IsFile(f)) add("Charger l'état " + std::to_string(s), FileDate(f), s, [&, s](int, bool act) { if (act) result = s; });
+        }
+        add("Réglages de ce jeu", e.HasGameSettings ? "propres" : "généraux", -1, [&](int, bool act) { if (act) GameSettings(g, e, configDir, general); });
+        add("Favori", e.Favorite ? "oui" : "non", -1, [&](int, bool) {
+            e.Favorite = !e.Favorite;
+            favs.erase(std::remove(favs.begin(), favs.end(), e.Path), favs.end());
+            if (e.Favorite) favs.push_back(e.Path);
+            home["favorites"] = JoinList(favs);
+            WriteKeyValues(homeFile, home);
+            changed = true;
+        });
+        if (fromRecent)
+            add("Retirer des jeux récents", "", -1, [&](int, bool act) {
+                if (!act) return;
+                std::string rf = configDir + "/recent.txt";
+                std::vector<std::string> paths = ReadRecent(rf);
+                paths.erase(std::remove(paths.begin(), paths.end(), e.Path), paths.end());
+                if (FILE* f = fopen(rf.c_str(), "w")) { for (auto& p : paths) fprintf(f, "%s\n", p.c_str()); fclose(f); }
+                changed = true;
+                result = -3;
+            });
+        add("Retour", "", -1, [&](int, bool act) { if (act) result = -3; });
+
+        GfxClear(g);
+        Fill(g, 0, 0, 1280, 720, 35, 38, 44);
+        const RomInfo& r = *e.Info;
+        if (r.HasIcon) DrawIcon(g, e.Path, r.Icon, 50, 40, 160);
+        else Fill(g, 50, 40, 160, 160, 60, 65, 74);
+        int ty = 46;
+        ty += DrawWrapped(g, r.Title, 236, ty, 560, Text, Big, 2);
+        if (!r.Subtitle.empty()) ty += DrawWrapped(g, r.Subtitle, 236, ty + 2, 560, TextDim, Small, 2);
+        DrawText(g, r.FileName, 236, ty + 8, TextDim, Small, 560);
+        if (e.Favorite) DrawStar(g, 186, 44);
+        DrawList(g, items, st, 30, 226, 760, 7, 56);
+
+        // right: screenshot of the selected state (or of the automatic state)
+        int shown = itemSlot.empty() ? -1 : itemSlot[std::clamp(st.Sel, 0, (int)itemSlot.size() - 1)];
+        if (shown < 0 && hasAuto) shown = 0;
+        Fill(g, 818, 40, 1, 600, 60, 65, 74);
+        std::vector<uint32_t> px;
+        int tw = 0, th = 0;
+        std::string thumb = shown >= 0 ? StateFile(configDir, e.Path, shown) + ".thumb" : "";
+        if (shown >= 0 && ReadThumb(thumb, px, tw, th))
+        {
+            DrawImage(g, thumb + FileDate(thumb), px.data(), tw, th, 924, 50, 256, 384, true);
+            DrawText(g, (shown ? "État " + std::to_string(shown) : std::string("État automatique")) + "  " + FileDate(thumb), 1052, 446, TextDim, Small, 380, 1);
+        }
+        else
+        {
+            Fill(g, 924, 50, 256, 384, 46, 50, 58);
+            DrawWrapped(g, shown >= 0 ? "Pas d'image pour cet état (sauvé par une ancienne version)" : "Aucun état sauvegardé", 944, 220, 216, TextDim, Small, 3);
+        }
+        DrawHints(g, {UI_A " Valider", UI_X " Favori", UI_Y " Réglages", UI_B " Retour"});
+        GfxPresent(g);
+        Trim();
+
+        Input in;
+        if (!Poll(in, 100)) continue;
+        if (in.Button == BtnB) result = -3;
+        else if (in.Button == BtnX) { for (size_t i = 0; i < items.size(); i++) if (items[i].Label == "Favori") items[i].Do(0, true); }
+        else if (in.Button == BtnY) GameSettings(g, e, configDir, general);
+        else ListInput(items, st, in, 30, 226, 760, 7, 56);
+    }
+    return result == -4 ? -3 : result;
+}
+
+HomeChoice RunHome(Gfx* g, const std::string& configDir, const std::string& startDir, const std::string& version)
 {
     const std::string recentFile = configDir + "/recent.txt", homeFile = configDir + "/home.txt", uiFile = configDir + "/ui.txt";
     KeyValues home = ReadKeyValues(homeFile);
     std::string dir = home.count("dir") && !home["dir"].empty() ? home["dir"] : startDir;
     struct stat st0;
     if (stat(dir.c_str(), &st0) != 0) dir = startDir;
+    // library folders: home.txt dirs=a|b; at first, the games folder of config.txt / sdmc:/roms/nds (not the whole card)
+    std::vector<std::string> libDirs = home.count("dirs") ? SplitList(home["dirs"]) : std::vector<std::string>();
+    if (!home.count("dirs") && startDir != "sdmc:/") libDirs.push_back(startDir);
+    std::vector<std::string> favs = SplitList(home["favorites"]);
+    bool gridView = !home.count("view") || home["view"] != "list";
+    auto saveHome = [&]() { home["dirs"] = JoinList(libDirs); home["favorites"] = JoinList(favs); home["view"] = gridView ? "grid" : "list"; WriteKeyValues(homeFile, home); };
 
-    std::vector<Entry> recent, files = ListDir(dir);
+    std::vector<Entry> recent, library, files = ListDir(dir);
     auto loadRecent = [&]() {
         recent.clear();
         for (const std::string& p : ReadRecent(recentFile))
@@ -415,98 +750,129 @@ std::string RunHome(Gfx* g, const std::string& configDir, const std::string& sta
                 Entry e;
                 e.Path = p;
                 e.Name = BaseName(p);
+                e.Favorite = std::find(favs.begin(), favs.end(), p) != favs.end();
                 recent.push_back(e);
             }
     };
+    auto loadLibrary = [&]() {
+        // first scan of a big folder: say so (titles are read from every ROM once, then cached)
+        GfxClear(g);
+        Fill(g, 0, 0, 1280, 720, 35, 38, 44);
+        DrawText(g, "Lecture de la bibliothèque...", 640, 340, TextDim, Normal, 0, 1);
+        GfxPresent(g);
+        library = BuildLibrary(libDirs, configDir, favs);
+    };
     loadRecent();
-    int tab = recent.empty() ? 1 : 0;
-    ListState recentSt, fileSt, settingsSt;
+    loadLibrary();
+    enum { TabRecent, TabLibrary, TabFiles, TabSettings, TabHelp, TabCount };
+    int tab = recent.empty() ? TabLibrary : TabRecent;
+    ListState recentSt, libSt, fileSt, settingsSt;
     KeyValues general = ReadKeyValues(uiFile);
-    std::string settingsNote;
-    static const char* tabs[] = {"Récents", "Jeux", "Réglages", "Aide"};
+    std::string note;
+    static const char* tabs[] = {"Récents", "Bibliothèque", "Fichiers", "Réglages", "Aide"};
 
     while (appletMainLoop())
     {
-        std::vector<Entry>& list = tab == 0 ? recent : files;
-        ListState& st = tab == 0 ? recentSt : fileSt;
-        Entry* sel = (tab <= 1 && !list.empty()) ? &list[std::clamp(st.Sel, 0, (int)list.size() - 1)] : nullptr;
+        bool gameTab = tab == TabRecent || tab == TabLibrary || tab == TabFiles;
+        std::vector<Entry>& list = tab == TabRecent ? recent : tab == TabLibrary ? library : files;
+        ListState& st = tab == TabRecent ? recentSt : tab == TabLibrary ? libSt : fileSt;
+        bool grid = gridView && tab != TabFiles;
+        Entry* sel = (gameTab && !list.empty()) ? &list[std::clamp(st.Sel, 0, (int)list.size() - 1)] : nullptr;
 
         std::vector<std::string> hints;
-        if (tab <= 1 && sel)
+        if (gameTab && sel)
         {
-            hints.push_back(sel->Dir ? UI_A " Ouvrir" : UI_A " Jouer");
-            if (!sel->Dir) hints.push_back(UI_Y " Réglages du jeu");
-            if (tab == 0) hints.push_back(UI_X " Retirer");
+            hints.push_back(sel->Dir ? UI_A " Ouvrir" : UI_A " Choisir");
+            if (!sel->Dir) hints.push_back(UI_X " Favori");
         }
-        if (tab == 1 && dir.size() > 6) hints.push_back(UI_B " Dossier parent");
-        if (tab == 2) hints.push_back(UI_A " / " UI_DPAD_LR " Changer");
+        if (tab == TabFiles) hints.push_back(UI_Y " Ajouter le dossier");
+        if (tab == TabFiles && dir.size() > 6) hints.push_back(UI_B " Parent");
+        if (tab == TabSettings) hints.push_back(UI_A " / " UI_DPAD_LR " Changer");
         hints.push_back(UI_L " " UI_R " Onglet");
         hints.push_back(UI_PLUS " Quitter");
 
         GfxClear(g);
         Fill(g, 0, 0, 1280, 720, 35, 38, 44);
-        DrawText(g, "melonDS Switch", 50, 24, Text, Big);
-        DrawText(g, version, 50 + TextWidth("melonDS Switch", Big) + 12, 38, TextDim, Small);
-        // tabs on the right of the header
-        int tx = 1240;
-        int tabX[4], tabW[4];
-        for (int i = 3; i >= 0; i--)
+        DrawText(g, "melonDS", 44, 26, Text, Big);
+        DrawText(g, version, 44 + TextWidth("melonDS", Big) + 10, 40, TextDim, Small);
+        int tx = 1250;
+        int tabX[TabCount], tabW[TabCount];
+        for (int i = TabCount - 1; i >= 0; i--)
         {
-            tabW[i] = TextWidth(tabs[i], Normal) + 36;
+            tabW[i] = TextWidth(tabs[i], Normal) + 30;
             tx -= tabW[i];
             tabX[i] = tx;
         }
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < TabCount; i++)
         {
-            DrawText(g, tabs[i], tabX[i] + 18, 30, i == tab ? AccentText : TextDim, Normal);
-            if (i == tab) Fill(g, tabX[i] + 10, 76, tabW[i] - 20, 4, 0, 200, 235);
+            DrawText(g, tabs[i], tabX[i] + 15, 30, i == tab ? AccentText : TextDim, Normal);
+            if (i == tab) Fill(g, tabX[i] + 8, 76, tabW[i] - 16, 4, 0, 200, 235);
         }
         Fill(g, 30, 88, 1220, 1, 90, 96, 106);
         Fill(g, 30, 646, 1220, 1, 90, 96, 106);
 
         std::vector<Item> settingItems;
-        if (tab <= 1)
+        std::string footer;
+        if (gameTab)
         {
             if (list.empty())
-                DrawWrapped(g, tab == 0 ? "Aucun jeu lancé récemment. Choisissez un jeu dans l'onglet « Jeux »." : "Aucun jeu (.nds) dans ce dossier.", ListX + 30, ListY + 30, 720, TextDim, Normal);
-            DrawGameList(g, list, st, configDir);
-            DrawDetails(g, sel, configDir);
-            DrawText(g, tab == 1 ? dir : std::to_string(recent.size()) + " jeu(x) récent(s)", 50, 666, TextDim, Small, HintsLeft(hints) - 90);
+                DrawWrapped(g, tab == TabRecent ? "Aucun jeu lancé récemment." :
+                               tab == TabLibrary ? (libDirs.empty() ? "La bibliothèque est vide : dans l'onglet « Fichiers », ouvrez le dossier de vos jeux et appuyez sur " UI_Y "." : "Aucun jeu (.nds) dans les dossiers de la bibliothèque.")
+                               : "Aucun jeu (.nds) dans ce dossier.", 80, 140, 1100, TextDim, Normal);
+            if (grid) DrawGrid(g, list, st, configDir);
+            else
+            {
+                DrawGameList(g, list, st, configDir);
+                DrawDetails(g, sel, configDir);
+            }
+            footer = tab == TabFiles ? dir : tab == TabLibrary ? std::to_string(library.size()) + " jeu(x)" : std::to_string(recent.size()) + " jeu(x) récent(s)";
         }
-        else if (tab == 2)
+        else if (tab == TabSettings)
         {
-            auto save = [&]() { settingsNote = WriteKeyValues(uiFile, general) ? "Enregistré : réglages de tous les jeux sans réglages propres." : "Impossible d'écrire " + uiFile; };
-            settingItems = SettingItems(general, nullptr, true, save);
+            auto save = [&]() { note = WriteKeyValues(uiFile, general) ? "Enregistré : réglages de tous les jeux sans réglages propres." : "Impossible d'écrire " + uiFile; };
+            Item h; h.Label = "Bibliothèque"; h.Header = true; settingItems.push_back(h);
+            settingItems.push_back({"Présentation", gridView ? "grille" : "liste", [&](int, bool) { gridView = !gridView; saveHome(); }});
+            for (size_t i = 0; i < libDirs.size(); i++)
+                settingItems.push_back({libDirs[i], "retirer", [&, i](int, bool act) {
+                    if (!act) return;
+                    libDirs.erase(libDirs.begin() + i);
+                    saveHome();
+                    loadLibrary();
+                    note = "Dossier retiré de la bibliothèque.";
+                }});
+            for (Item& it : SettingItems(general, nullptr, true, save)) settingItems.push_back(it);
             DrawList(g, settingItems, settingsSt, ListX, ListY, 1200, 9, 58);
-            DrawText(g, settingsNote.empty() ? "Un jeu peut avoir ses propres réglages : " UI_Y " dans la liste" : settingsNote, 50, 666, settingsNote.empty() ? TextDim : AccentText, Small, HintsLeft(hints) - 90);
+            footer = note.empty() ? "Un jeu peut avoir ses propres réglages : sa page, puis « Réglages de ce jeu »" : note;
         }
         else
             DrawHelp(g);
+        if (!footer.empty()) DrawText(g, footer, 50, 666, note.empty() || gameTab ? TextDim : AccentText, Small, HintsLeft(hints) - 90);
         DrawHints(g, hints);
         GfxPresent(g);
         Trim();
 
         Input in;
         if (!Poll(in, 100)) continue;
-        if (in.Button == BtnPlus || in.Button == BtnMinus) return "";
+        if (in.Button == BtnPlus || in.Button == BtnMinus) return HomeChoice();
         if (in.Button == BtnL || in.Button == BtnR || in.Button == BtnZL || in.Button == BtnZR)
         {
-            tab = (tab + ((in.Button == BtnL || in.Button == BtnZL) ? 3 : 1)) % 4;
-            settingsNote.clear();
+            tab = (tab + ((in.Button == BtnL || in.Button == BtnZL) ? TabCount - 1 : 1)) % TabCount;
+            note.clear();
             continue;
         }
         if (in.Tap && in.TouchY < 88)
         {
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < TabCount; i++)
                 if (in.TouchX >= tabX[i] && in.TouchX < tabX[i] + tabW[i]) tab = i;
             continue;
         }
-        if (tab == 2) { ListInput(settingItems, settingsSt, in, ListX, ListY, 1200, 9, 58); continue; }
-        if (tab == 3) continue;
+        if (tab == TabSettings) { ListInput(settingItems, settingsSt, in, ListX, ListY, 1200, 9, 58); continue; }
+        if (tab == TabHelp) continue;
 
-        // game lists
         int n = (int)list.size();
-        auto open = [&](Entry& e) -> bool {
+        // A on a game: its page (continue, states, settings); on a folder: open it
+        auto open = [&](Entry& e) -> HomeChoice {
+            HomeChoice c;
             if (e.Dir)
             {
                 dir = e.Path;
@@ -515,46 +881,89 @@ std::string RunHome(Gfx* g, const std::string& configDir, const std::string& sta
                 home["dir"] = dir;
                 WriteKeyValues(homeFile, home);
                 ForgetIcons();
-                return false;
+                return c;
             }
-            return true;
+            bool changed = false;
+            int slot = GamePage(g, e, configDir, general, tab == TabRecent, favs, homeFile, home, changed);
+            if (changed)
+            {
+                std::string keep = e.Path;
+                loadRecent();
+                for (Entry& x : library) x.Favorite = std::find(favs.begin(), favs.end(), x.Path) != favs.end();
+                std::stable_sort(library.begin(), library.end(), [](const Entry& a, const Entry& b) {
+                    if (a.Favorite != b.Favorite) return a.Favorite;
+                    return LowerCase(a.Title) < LowerCase(b.Title);
+                });
+                for (int i = 0; i < (int)library.size(); i++) if (library[i].Path == keep) libSt.Sel = i;
+            }
+            if (slot >= -1) { c.Path = e.Path; c.LoadSlot = slot; }
+            return c;
         };
-        if (in.Button == BtnUp && n) st.Sel = (st.Sel + n - 1) % n;
-        else if (in.Button == BtnDown && n) st.Sel = (st.Sel + 1) % n;
-        else if (in.Button == BtnLeft && n) st.Sel = std::max(st.Sel - Rows, 0);
-        else if (in.Button == BtnRight && n) st.Sel = std::min(st.Sel + Rows, n - 1);
-        else if (in.Button == BtnA && sel) { if (open(*sel)) return sel->Path; }
-        else if (in.Button == BtnB && tab == 1 && !files.empty() && files[0].Up) open(files[0]);
-        else if (in.Button == BtnY && sel && !sel->Dir) GameSettings(g, *sel, configDir, general);
-        else if (in.Button == BtnX && sel && tab == 0)
+        auto toggleFav = [&](Entry& e) {
+            if (e.Dir) return;
+            bool on = std::find(favs.begin(), favs.end(), e.Path) == favs.end();
+            favs.erase(std::remove(favs.begin(), favs.end(), e.Path), favs.end());
+            if (on) favs.push_back(e.Path);
+            saveHome();
+            std::string keep = e.Path;
+            for (Entry& x : library) x.Favorite = std::find(favs.begin(), favs.end(), x.Path) != favs.end();
+            for (Entry& x : recent) x.Favorite = std::find(favs.begin(), favs.end(), x.Path) != favs.end();
+            std::stable_sort(library.begin(), library.end(), [](const Entry& a, const Entry& b) {
+                if (a.Favorite != b.Favorite) return a.Favorite;
+                return LowerCase(a.Title) < LowerCase(b.Title);
+            });
+            if (tab == TabLibrary) for (int i = 0; i < (int)library.size(); i++) if (library[i].Path == keep) libSt.Sel = i;
+        };
+        const int step = grid ? GridCols : 1, page = grid ? GridCols * GridRows : Rows;
+        if (in.Button == BtnUp && n)
+            st.Sel = grid ? (st.Sel >= step ? st.Sel - step : st.Sel) : (st.Sel + n - 1) % n;
+        else if (in.Button == BtnDown && n)
         {
-            std::vector<std::string> paths = ReadRecent(recentFile);
-            paths.erase(std::remove(paths.begin(), paths.end(), sel->Path), paths.end());
-            if (FILE* f = fopen(recentFile.c_str(), "w")) { for (auto& p : paths) fprintf(f, "%s\n", p.c_str()); fclose(f); }
-            loadRecent();
+            if (!grid) st.Sel = (st.Sel + 1) % n;
+            else if (st.Sel / step < (n - 1) / step) st.Sel = std::min(st.Sel + step, n - 1);   // next row (last game if shorter)
         }
-        else if (in.DragY && in.TouchX < ListX + ListW)
+        else if (in.Button == BtnLeft && n) st.Sel = grid ? std::max(st.Sel - 1, 0) : std::max(st.Sel - page, 0);
+        else if (in.Button == BtnRight && n) st.Sel = grid ? std::min(st.Sel + 1, n - 1) : std::min(st.Sel + page, n - 1);
+        else if (in.Button == BtnA && sel) { HomeChoice c = open(*sel); if (!c.Path.empty()) return c; }
+        else if (in.Button == BtnX && sel) toggleFav(*sel);
+        else if (in.Button == BtnB && tab == TabFiles && !files.empty() && files[0].Up) open(files[0]);
+        else if (in.Button == BtnY && tab == TabFiles)
+        {
+            if (std::find(libDirs.begin(), libDirs.end(), dir) == libDirs.end()) libDirs.push_back(dir);
+            saveHome();
+            loadLibrary();
+            tab = TabLibrary;
+        }
+        else if (in.DragY)
         {
             static int acc = 0;
+            const int unit = grid ? TileH + TileGap : RowH;
             acc += in.DragY;
-            while (acc <= -RowH) { acc += RowH; st.Top = std::min(st.Top + 1, std::max(n - Rows, 0)); }
-            while (acc >= RowH) { acc -= RowH; st.Top = std::max(st.Top - 1, 0); }
-            st.Sel = std::clamp(st.Sel, st.Top, std::max(st.Top + Rows - 1, 0));
+            int rowsTotal = grid ? (n + GridCols - 1) / GridCols : n, vis = grid ? GridRows : Rows;
+            while (acc <= -unit) { acc += unit; st.Top = std::min(st.Top + 1, std::max(rowsTotal - vis, 0)); }
+            while (acc >= unit) { acc -= unit; st.Top = std::max(st.Top - 1, 0); }
+            if (grid) st.Sel = std::clamp(st.Sel, st.Top * GridCols, std::min((st.Top + GridRows) * GridCols - 1, std::max(n - 1, 0)));
+            else st.Sel = std::clamp(st.Sel, st.Top, std::max(st.Top + Rows - 1, 0));
         }
-        else if (in.Tap && in.TouchX >= ListX && in.TouchX < ListX + ListW && in.TouchY >= ListY && in.TouchY < ListY + Rows * RowH)
+        else if (in.Tap && n)
         {
-            // tap: select, tap again: open / play
-            int i = st.Top + (in.TouchY - ListY) / RowH;
-            if (i < n)
+            // tap: select, tap again: open
+            int i = -1;
+            if (grid && in.TouchY >= GridY && in.TouchX >= GridX)
             {
-                if (i == st.Sel) { if (open(list[i])) return list[i].Path; }
+                int c = (in.TouchX - GridX) / (TileW + TileGap), r = (in.TouchY - GridY) / (TileH + TileGap);
+                if (c < GridCols && r < GridRows) i = (st.Top + r) * GridCols + c;
+            }
+            else if (!grid && in.TouchX >= ListX && in.TouchX < ListX + ListW && in.TouchY >= ListY && in.TouchY < ListY + Rows * RowH)
+                i = st.Top + (in.TouchY - ListY) / RowH;
+            else if (!grid && in.TouchX >= 810 && in.TouchY >= ListY && in.TouchY < 646 && sel)
+                i = st.Sel;
+            if (i >= 0 && i < n)
+            {
+                if (i == st.Sel) { HomeChoice c = open(list[i]); if (!c.Path.empty()) return c; }
                 else st.Sel = i;
             }
         }
-        else if (in.Tap && in.TouchX >= 810 && in.TouchY >= ListY && in.TouchY < 646 && sel)
-        {
-            if (open(*sel)) return sel->Path;   // tap on the details: play
-        }
     }
-    return "";
+    return HomeChoice();
 }
