@@ -929,6 +929,13 @@ int main(int argc, char** argv)
             last = frames;
             if (idle >= 1 && DebugStage != 99)
                 logf("watchdog: no frame progress for %ds (frames=%d, stage=%d, faults=%llu, lastfault addr=%llx pc=%llx)\n", idle, frames, (int)DebugStage, (unsigned long long)SwitchFaultCount, (unsigned long long)SwitchLastFaultAddr, (unsigned long long)SwitchLastFaultPC);
+            // deko3d: a GPU hang blocks the emulation thread in a fence wait (inputs, exit combo and HOME no longer
+            // work): end the process so that the console stays usable (the system shows an error, OK returns to it)
+            if (GfxDk && DebugStage == 2 && idle >= 6)
+            {
+                logf("watchdog: emulation blocked for %ds in deko3d mode (GPU hang?), ending the process\n", idle);
+                svcExitProcess();
+            }
         }
     });
 

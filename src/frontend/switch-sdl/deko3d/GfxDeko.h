@@ -29,6 +29,8 @@ bool DkGfxInit(const std::function<void(const std::string&)>& say);
 void DkGfxShutdown();
 // the DkDevice (shared with the 3D renderer), null before DkGfxInit
 void* DkGfxDevice();
+// the presentation queue (graphics + compute), also used by the 3D renderer
+void* DkGfxQueue();
 // a GPU job never finished: at exit, leave the device alone (the system reclaims it with the process)
 void DkGfxMarkBroken();
 

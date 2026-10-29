@@ -65,6 +65,10 @@ struct State
     DkSwapchain Swapchain = nullptr;
     DkShader Vsh, Fsh;
     DkCmdBuf Cmd = nullptr;
+    // one small list per swapchain image binding it as the render target (recorded once, like deko_basic)
+    DkCmdBuf FbCmd = nullptr;
+    DkMemBlock FbCmdMem = nullptr;
+    DkCmdList BindFb[FbNum];
     DkFence Fences[Slots];
     bool Submitted[Slots] {};
     std::vector<int> PendingFree[Slots];
@@ -181,14 +185,13 @@ void EnsureFrame()
     dkCmdBufBindSamplerDescriptorSet(S.Cmd, DataGpu(S.SmpDescOff), 2);
 }
 
+// draw state of the frame. The swapchain image is only acquired when presenting: acquiring makes the queue wait
+// for the image on the GPU, and such a wait blocks the other queues too (the 3D renderer's): the emulation would
+// then wait for a 3D frame that cannot run before the next present.
 void EnsureTarget()
 {
     EnsureFrame();
     if (S.TargetBound) return;
-    S.FbSlot = dkQueueAcquireImage(S.Queue, S.Swapchain);
-    DkImageView view;
-    dkImageViewDefaults(&view, &S.Fb[S.FbSlot]);
-    dkCmdBufBindRenderTarget(S.Cmd, &view, nullptr);
     DkViewport vp {0.f, 0.f, (float)FbW, (float)FbH, 0.f, 1.f};
     DkScissor sc {0, 0, FbW, FbH};
     dkCmdBufSetViewports(S.Cmd, 0, &vp, 1);
@@ -213,10 +216,16 @@ void EnsureTarget()
 void SubmitFrame(bool present)
 {
     DkCmdList list = dkCmdBufFinishList(S.Cmd);
+    present = present && S.TargetBound;
+    if (present)
+    {
+        S.FbSlot = dkQueueAcquireImage(S.Queue, S.Swapchain);
+        dkQueueSubmitCommands(S.Queue, S.BindFb[S.FbSlot]);
+    }
     dkQueueSubmitCommands(S.Queue, list);
     dkQueueSignalFence(S.Queue, &S.Fences[S.Slot], false);
     S.Submitted[S.Slot] = true;
-    if (present && S.TargetBound)
+    if (present)
         dkQueuePresentImage(S.Queue, S.Swapchain, S.FbSlot);
     else
         dkQueueFlush(S.Queue);
@@ -276,6 +285,19 @@ bool DkGfxInit(const std::function<void(const std::string&)>& say)
     dkCmdBufMakerDefaults(&cm, S.Device);
     S.Cmd = dkCmdBufCreate(&cm);
 
+    dkMemBlockMakerDefaults(&mm, S.Device, 0x1000);
+    mm.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
+    S.FbCmdMem = dkMemBlockCreate(&mm);
+    S.FbCmd = dkCmdBufCreate(&cm);
+    dkCmdBufAddMemory(S.FbCmd, S.FbCmdMem, 0, 0x1000);
+    for (int i = 0; i < FbNum; i++)
+    {
+        DkImageView view;
+        dkImageViewDefaults(&view, &S.Fb[i]);
+        dkCmdBufBindRenderTarget(S.FbCmd, &view, nullptr);
+        S.BindFb[i] = dkCmdBufFinishList(S.FbCmd);
+    }
+
     // uniforms, descriptors, staging
     S.UboOff = 0;
     S.ImgDescOff = DK_UNIFORM_BUF_ALIGNMENT;
@@ -305,7 +327,8 @@ bool DkGfxInit(const std::function<void(const std::string&)>& say)
 
     DkQueueMaker qm;
     dkQueueMakerDefaults(&qm, S.Device);
-    qm.flags = DkQueueFlags_Graphics;
+    // graphics + compute: the 3D renderer submits its compute work here too. A second queue for it did not run at
+    // all on the console (even an empty command list never completed), one queue avoids that and keeps the order.
     S.Queue = dkQueueCreate(&qm);
     if (!S.Queue) { say("deko3d: no queue"); return false; }
     say("deko3d: device, 3 x 1280x720 swapchain, quad shaders ready");
@@ -317,6 +340,11 @@ static bool GpuBroken = false;
 void DkGfxMarkBroken()
 {
     GpuBroken = true;
+}
+
+void* DkGfxQueue()
+{
+    return S.Queue;
 }
 
 void* DkGfxDevice()
@@ -331,8 +359,9 @@ void DkGfxShutdown()
     dkQueueWaitIdle(S.Queue);
     dkQueueDestroy(S.Queue);
     dkCmdBufDestroy(S.Cmd);
+    dkCmdBufDestroy(S.FbCmd);
     dkSwapchainDestroy(S.Swapchain);
-    for (DkMemBlock b : {S.TexMem, S.DataMem, S.CmdMem, S.CodeMem, S.FbMem})
+    for (DkMemBlock b : {S.TexMem, S.DataMem, S.CmdMem, S.FbCmdMem, S.CodeMem, S.FbMem})
         if (b) dkMemBlockDestroy(b);
     dkDeviceDestroy(S.Device);
     S = State();

@@ -221,20 +221,18 @@ bool DekoRenderer3D::Init()
     dkCmdBufMakerDefaults(&cm, Device);
     Cmd = dkCmdBufCreate(&cm);
 
-    // graphics + compute (the default): copies and some barriers need the graphics channel
-    DkQueueMaker qm;
-    dkQueueMakerDefaults(&qm, Device);
-    Queue = dkQueueCreate(&qm);
+    // the presentation queue (see DkGfxQueue)
+    Queue = (DkQueue)DkGfxQueue();
     if (!Queue || !Cmd) return false;
 
     TexArrays.clear();
+
     return true;
 }
 
 DekoRenderer3D::~DekoRenderer3D()
 {
-    if (Queue && WaitPending("destructor"))
-        dkQueueWaitIdle(Queue);
+    if (Queue) WaitPending("destructor");
     if (Broken)
     {
         // the GPU may still be using this memory: leak it rather than free it under the GPU
@@ -245,7 +243,6 @@ DekoRenderer3D::~DekoRenderer3D()
     Texcache.Reset();
     for (TexArray& a : TexArrays)
         if (a.Mem) dkMemBlockDestroy(a.Mem);
-    if (Queue) dkQueueDestroy(Queue);
     if (Cmd) dkCmdBufDestroy(Cmd);
     for (DkMemBlock b : {CmdMem, ReadbackMem, ImageMem, GpuMem, DataMem, CodeMem})
         if (b) dkMemBlockDestroy(b);
@@ -255,30 +252,29 @@ DekoRenderer3D::~DekoRenderer3D()
 
 int DekoRenderer3D::DebugSync = 0;
 
-// diagnosis: runs what was recorded up to this pass and waits for it (GPU state persists between command lists)
+// diagnosis: runs what was recorded up to this pass and waits for it (GPU state persists between command lists).
+// The last "submitted" line without its "done" in the log is the pass that hangs (the frontend watchdog then ends
+// the process).
 bool DekoRenderer3D::Checkpoint(const char* pass)
 {
-    if (!DebugSync || Broken) return !Broken;
+    if (!DebugSync) return true;
     dkQueueSubmitCommands(Queue, dkCmdBufFinishList(Cmd));
     dkQueueSignalFence(Queue, &Fence, true);
-    if (dkFenceWait(&Fence, 300000000LL) != DkResult_Success)
-    {
-        Platform::Log(Platform::LogLevel::Error, "deko3d 3D: pass '%s' did not finish within 300 ms, 3D disabled\n", pass);
-        Broken = true;
-        DkGfxMarkBroken();
-        return false;
-    }
-    Platform::Log(Platform::LogLevel::Warn, "deko3d 3D: pass '%s' ok\n", pass);
+    Platform::Log(Platform::LogLevel::Warn, "deko3d 3D: pass '%s' submitted\n", pass);
+    dkFenceWait(&Fence, -1);
+    Platform::Log(Platform::LogLevel::Warn, "deko3d 3D: pass '%s' done\n", pass);
     return true;
 }
 
-// never waits forever: a GPU hang would freeze the whole app (no input, no exit)
+// Waits with a timeout are not usable: in this process libnx's timed fence waits always report a timeout (seen
+// on the console, even on the presentation queue). Infinite waits work; a GPU hang is caught by the frontend
+// watchdog, which ends the process instead of leaving the console frozen.
 bool DekoRenderer3D::WaitPending(const char* where)
 {
     if (!Pending) return !Broken;
-    if (dkFenceWait(&Fence, 1000000000LL) != DkResult_Success)
+    if (dkFenceWait(&Fence, -1) != DkResult_Success)
     {
-        Platform::Log(Platform::LogLevel::Error, "deko3d 3D: GPU did not finish the frame within 1 s (%s), 3D disabled\n", where);
+        Platform::Log(Platform::LogLevel::Error, "deko3d 3D: fence wait failed (%s), 3D disabled\n", where);
         Broken = true;
         DkGfxMarkBroken();
     }
@@ -371,7 +367,7 @@ u32 DekoRenderer3D::AllocTextureArray(u32 width, u32 height, u32 layers)
     a.Used = true;
     WriteDescriptor(descTexcacheStart + (int)idx, a.Image, false);
     // seen by the GPU after the next descriptor invalidation (BeginCommands, or right here when recording)
-    dkCmdBufBarrier(Cmd, DkBarrier_None, DkInvalidateFlags_Descriptors);
+    dkCmdBufBarrier(Cmd, DkBarrier_Full, DkInvalidateFlags_Descriptors);
     return descTexcacheStart + (u32)idx;
 }
 
@@ -621,6 +617,7 @@ void DekoRenderer3D::RenderFrame()
     if (!WaitPending("render") || Broken) return;
 
     BeginCommands();
+    if (!Checkpoint("start")) return;
 
     u8 clrBitmapDirty;
     if (!Texcache.Update(clrBitmapDirty) && GPU3D.RenderFrameIdentical)
@@ -675,6 +672,7 @@ void DekoRenderer3D::RenderFrame()
 
         ClearBitmapDirty = 0;
     }
+    if (!Checkpoint("clear bitmaps")) return;
 
     int numYSpans = 0;
     int numSetupIndices = 0;
@@ -890,6 +888,7 @@ void DekoRenderer3D::RenderFrame()
         }
     }
 
+    if (!Checkpoint("texture cache")) return;
     if (numYSpans > 0)
     {
         memcpy(DataCpu(OffYSpanSetups), YSpanSetups, sizeof(SpanSetupY)*numYSpans);
@@ -903,6 +902,7 @@ void DekoRenderer3D::RenderFrame()
             dkCmdBufCopyBuffer(Cmd, src, dkMemBlockGetGpuAddr(ImageMem) + 0 /* YSpanIndicesImage at offset 0 */, numSetupIndices*4*2);
         }
     }
+    if (!Checkpoint("setup indices copy")) return;
     // texture uploads, clear bitmaps and setup indices are complete before the compute passes read them
     dkCmdBufBarrier(Cmd, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_L2Cache);
     if (!Checkpoint("uploads")) return;
