@@ -51,7 +51,7 @@ if (SWITCH_DEKO3D)
         DEPENDS ${DK_SRC}/GenComputeShaders.cpp ${CMAKE_SOURCE_DIR}/src/GPU3D_Compute_shaders.h ${DK_SRC}/EmbedDksh.cmake
         COMMENT "Compiling the deko3d compute renderer shaders (33 variants, uam)"
         VERBATIM)
-    target_sources(melonDS-switch PRIVATE deko3d/GfxDeko.cpp ${DK_OUT}/gfx_shaders.h ${DK_OUT}/compute_shaders.h)
+    target_sources(melonDS-switch PRIVATE deko3d/GfxDeko.cpp deko3d/DekoRenderer.cpp ${DK_OUT}/gfx_shaders.h ${DK_OUT}/compute_shaders.h)
     target_include_directories(melonDS-switch PRIVATE ${DK_OUT})
     target_compile_definitions(melonDS-switch PRIVATE SWITCH_DEKO3D)
     target_link_libraries(melonDS-switch PRIVATE deko3d)

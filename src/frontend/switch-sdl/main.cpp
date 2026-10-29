@@ -66,6 +66,7 @@
 #include "Savestate.h"
 #ifdef SWITCH_DEKO3D
 #include "deko3d/GfxDeko.h"
+#include "deko3d/DekoRenderer.h"
 #endif
 
 using namespace melonDS;
@@ -1015,11 +1016,16 @@ int main(int argc, char** argv)
 
     // 3D renderer: software (optionally on its own thread: 3 cores are available to homebrew) or GLES 3 on the GPU
     auto applyRenderer = [&](bool gpu) -> bool {
+#ifdef SWITCH_DEKO3D
         if (gpu && GfxDk)
         {
-            logf("GPU renderer (GLES 3) unavailable with the deko3d presentation\n");
-            return false;
+            // 3D on the GPU through deko3d (compute renderer), 2D in software
+            // SetRenderer calls Init() and falls back to the software renderer if it fails
+            nds->SetRenderer(std::make_unique<DekoSoftRenderer>(*nds, (DkDevice)DkGfxDevice()));
+            logf("GPU renderer (deko3d compute, 1x) requested, 2D in software\n");
+            return true;
         }
+#endif
 #ifdef OGLRENDERER_ENABLED
         if (gpu)
         {

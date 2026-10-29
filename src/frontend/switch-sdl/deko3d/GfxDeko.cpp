@@ -304,6 +304,11 @@ bool DkGfxInit(const std::function<void(const std::string&)>& say)
     return true;
 }
 
+void* DkGfxDevice()
+{
+    return S.Device;
+}
+
 void DkGfxShutdown()
 {
     if (!S.Device) return;
