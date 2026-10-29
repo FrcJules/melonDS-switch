@@ -54,7 +54,13 @@ if (SWITCH_DEKO3D)
     target_sources(melonDS-switch PRIVATE deko3d/GfxDeko.cpp deko3d/DekoRenderer.cpp ${DK_OUT}/gfx_shaders.h ${DK_OUT}/compute_shaders.h)
     target_include_directories(melonDS-switch PRIVATE ${DK_OUT})
     target_compile_definitions(melonDS-switch PRIVATE SWITCH_DEKO3D)
-    target_link_libraries(melonDS-switch PRIVATE deko3d)
+    # debug build of deko3d (more checks, reported through the debug callback) for development
+    option(SWITCH_DEKO3D_DEBUG "Link the debug build of deko3d (libdeko3dd)" OFF)
+    if (SWITCH_DEKO3D_DEBUG)
+        target_link_libraries(melonDS-switch PRIVATE deko3dd)
+    else()
+        target_link_libraries(melonDS-switch PRIVATE deko3d)
+    endif()
 endif()
 
 # timing profilers (prof=/glprof= columns of the log); they read the system counter in the hot loops
