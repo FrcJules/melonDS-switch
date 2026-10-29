@@ -25,7 +25,8 @@
 #include <string.h>
 #include <vector>
 
-#include "gfx_shaders.h"   // generated: compiled .dksh of gfx_vsh.glsl / gfx_fsh.glsl (uam)
+#include "gfx_shaders.h"
+#include "Platform.h"   // generated: compiled .dksh of gfx_vsh.glsl / gfx_fsh.glsl (uam)
 
 namespace
 {
@@ -81,6 +82,12 @@ struct State
     u32 StagingUsed = 0;
     int Blend = -1;
 } S;
+
+// deko3d reports API misuse and errors here (otherwise a mistake can just hang the GPU)
+void DebugOutput(void*, const char* context, DkResult result, const char* message)
+{
+    melonDS::Platform::Log(melonDS::Platform::LogLevel::Error, "deko3d: %s: result %d: %s\n", context ? context : "?", (int)result, message ? message : "");
+}
 
 DkGpuAddr DataGpu(u32 off) { return dkMemBlockGetGpuAddr(S.DataMem) + off; }
 u8* DataCpu(u32 off) { return (u8*)dkMemBlockGetCpuAddr(S.DataMem) + off; }
@@ -223,6 +230,7 @@ bool DkGfxInit(const std::function<void(const std::string&)>& say)
 {
     DkDeviceMaker dm;
     dkDeviceMakerDefaults(&dm);
+    dm.cbDebug = DebugOutput;
     S.Device = dkDeviceCreate(&dm);
     if (!S.Device) { say("deko3d: no device"); return false; }
 
