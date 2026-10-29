@@ -26,7 +26,32 @@ if (SWITCH_DEKO3D)
         DEPENDS ${DK_SRC}/gfx_vsh.glsl ${DK_SRC}/gfx_fsh.glsl ${DK_SRC}/EmbedDksh.cmake
         COMMENT "Compiling deko3d shaders (uam)"
         VERBATIM)
-    target_sources(melonDS-switch PRIVATE deko3d/GfxDeko.cpp ${DK_OUT}/gfx_shaders.h)
+    # compute renderer (3D on deko3d): the 33 variants of src/GPU3D_Compute_shaders.h written at 1x by a host tool
+    find_program(HOST_CXX NAMES g++ c++ clang++ PATHS /usr/bin /usr/local/bin NO_DEFAULT_PATH REQUIRED)
+    set(DK_COMPUTE InterpXSpansZ InterpXSpansW BinCombined DepthBlendZ DepthBlendW
+        RasteriseNoTextureZ RasteriseNoTextureW RasteriseNoTextureToonZ RasteriseNoTextureToonW
+        RasteriseNoTextureHighlightZ RasteriseNoTextureHighlightW RasteriseUseTextureDecalZ RasteriseUseTextureDecalW
+        RasteriseUseTextureModulateZ RasteriseUseTextureModulateW RasteriseUseTextureToonZ RasteriseUseTextureToonW
+        RasteriseUseTextureHighlightZ RasteriseUseTextureHighlightW RasteriseShadowMaskZ RasteriseShadowMaskW
+        ClearCoarseBinMask ClearIndirectWorkCount CalculateWorkOffsets SortWork
+        FinalPass FinalPassEdge FinalPassFog FinalPassEdgeFog FinalPassAA FinalPassAAEdge FinalPassAAFog FinalPassAAEdgeFog)
+    set(DK_UAM_CMDS)
+    set(DK_EMBED)
+    foreach(n ${DK_COMPUTE})
+        list(APPEND DK_UAM_CMDS COMMAND ${UAM} -s comp -o ${DK_OUT}/cs/${n}.dksh ${DK_OUT}/cs/${n}.glsl)
+        list(APPEND DK_EMBED "Cs${n}=${DK_OUT}/cs/${n}.dksh")
+    endforeach()
+    string(REPLACE ";" "|" DK_EMBED "${DK_EMBED}")
+    add_custom_command(OUTPUT ${DK_OUT}/compute_shaders.h
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${DK_OUT}/cs
+        COMMAND ${HOST_CXX} -O1 -std=c++17 -o ${DK_OUT}/GenComputeShaders ${DK_SRC}/GenComputeShaders.cpp
+        COMMAND ${DK_OUT}/GenComputeShaders ${DK_OUT}/cs
+        ${DK_UAM_CMDS}
+        COMMAND ${CMAKE_COMMAND} -DOUT=${DK_OUT}/compute_shaders.h -DINPUTS=${DK_EMBED} -P ${DK_SRC}/EmbedDksh.cmake
+        DEPENDS ${DK_SRC}/GenComputeShaders.cpp ${CMAKE_SOURCE_DIR}/src/GPU3D_Compute_shaders.h ${DK_SRC}/EmbedDksh.cmake
+        COMMENT "Compiling the deko3d compute renderer shaders (33 variants, uam)"
+        VERBATIM)
+    target_sources(melonDS-switch PRIVATE deko3d/GfxDeko.cpp ${DK_OUT}/gfx_shaders.h ${DK_OUT}/compute_shaders.h)
     target_include_directories(melonDS-switch PRIVATE ${DK_OUT})
     target_compile_definitions(melonDS-switch PRIVATE SWITCH_DEKO3D)
     target_link_libraries(melonDS-switch PRIVATE deko3d)
