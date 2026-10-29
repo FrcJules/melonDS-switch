@@ -101,7 +101,7 @@ static const std::vector<SettingDef>& Defs()
         {"autotop", "Grand écran si le bas est noir", {{"1", "oui"}, {"0", "non"}}, "1"},
         {"gpu", "Rendu 3D", {{"1", "GPU (GLES 3)"}, {"0", "logiciel"}}, "1"},
         {"gpuscale", "Résolution GPU", {{"1", "1x"}, {"2", "2x"}, {"3", "3x"}}, "2"},
-        {"threaded", "3D logicielle sur un 2e cœur", {{"1", "oui"}, {"0", "non"}}, "1"},
+        {"threaded", "3D sur un 2e cœur (logiciel)", {{"1", "oui"}, {"0", "non"}}, "1"},
         {"cpu", "Fréquence CPU", {{"0", "auto"}, {"1020", "1020 MHz"}, {"1224", "1224 MHz"}, {"1581", "1581 MHz"}, {"1785", "1785 MHz"}}, "0"},
         {"filter", "Filtre", {{"0", "pixels nets"}, {"1", "lissé"}}, "0"},
         {"showfps", "Afficher les fps", {{"0", "non"}, {"1", "oui"}}, "0"},
@@ -249,9 +249,10 @@ static void DrawFolderIcon(Gfx* g, int x, int y, bool up)
     Fill(g, x + 4, y + 16, 56, 38, 0, 200, 235);
     if (up)
     {
-        // arrow up
-        Fill(g, x + 29, y + 24, 6, 24, 35, 38, 44);
-        Fill(g, x + 22, y + 30, 20, 5, 35, 38, 44);
+        // arrow up: head made of bars getting wider, then the shaft
+        for (int i = 0; i < 8; i++)
+            Fill(g, x + 31 - i * 2, y + 22 + i * 2, 2 + i * 4, 2, 35, 38, 44);
+        Fill(g, x + 29, y + 38, 6, 12, 35, 38, 44);
     }
 }
 
@@ -360,8 +361,8 @@ static void GameSettings(Gfx* g, Entry& e, const std::string& configDir, const K
 
         DrawFrame(g, "Réglages : " + e.Info->Title, {UI_A " / " UI_DPAD_LR " Changer", UI_B " Retour"});
         DrawList(g, items, st, ListX, ListY, 1200, 9, 58);
-        if (!note.empty()) DrawText(g, note, 60, 660, Warn, Small, 700);
-        else DrawText(g, e.HasGameSettings ? "Réglages propres à ce jeu" : "Ce jeu suit les réglages généraux", 60, 660, TextDim, Small, 700);
+        if (!note.empty()) DrawText(g, note, 60, 666, Warn, Small, 700);
+        else DrawText(g, e.HasGameSettings ? "Réglages propres à ce jeu" : "Ce jeu suit les réglages généraux", 60, 666, TextDim, Small, 700);
         GfxPresent(g);
         Trim();
         Input in;
@@ -377,13 +378,13 @@ static void DrawHelp(Gfx* g)
     static const Line lines[] = {
         {UI_DPAD " / " UI_LSTICK "   " UI_A " " UI_B " " UI_X " " UI_Y "   " UI_L " " UI_R "   " UI_PLUS " " UI_MINUS, "Boutons de la DS (" UI_PLUS " = Start, " UI_MINUS " = Select)"},
         {"Toucher l'écran", "Écran tactile de la DS (mode portable)"},
-        {UI_RSTICK " puis " UI_RSTICK_PRESS " maintenu", "Curseur tactile sans toucher l'écran (mode TV)"},
+        {UI_RSTICK " puis " UI_RSTICK " enfoncé", "Curseur tactile sans toucher l'écran (mode TV)"},
         {UI_ZL " + " UI_ZR " + " UI_PLUS, "Menu : affichage, rendu, états, changer de jeu, quitter"},
         {UI_ZL " + " UI_ZR " + " UI_X " / " UI_Y, "Sauvegarder / charger l'état"},
         {UI_ZL " + " UI_ZR " + " UI_DPAD_LR, "Choisir l'emplacement d'état (1 à 4)"},
-        {UI_ZL " + " UI_ZR " + haut", "Disposition suivante (verticale, horizontale, hybride)"},
+        {UI_ZL " + " UI_ZR " + " UI_UP, "Disposition suivante (verticale, horizontale, hybride)"},
         {UI_ZL " + " UI_ZR " + " UI_MINUS, "Inverser les écrans (hybride : grand écran haut/bas)"},
-        {UI_L " + " UI_R " + " UI_PLUS " + " UI_MINUS, "Quitter (l'état est sauvegardé et rechargé au prochain lancement)"},
+        {UI_L " + " UI_R " + " UI_PLUS " + " UI_MINUS, "Quitter (état sauvegardé, repris au lancement)"},
     };
     int y = ListY + 6;
     for (const Line& l : lines)
@@ -469,14 +470,14 @@ std::string RunHome(Gfx* g, const std::string& configDir, const std::string& sta
                 DrawWrapped(g, tab == 0 ? "Aucun jeu lancé récemment. Choisissez un jeu dans l'onglet « Jeux »." : "Aucun jeu (.nds) dans ce dossier.", ListX + 30, ListY + 30, 720, TextDim, Normal);
             DrawGameList(g, list, st, configDir);
             DrawDetails(g, sel, configDir);
-            DrawText(g, tab == 1 ? dir : std::to_string(recent.size()) + " jeu(x) récent(s)", 50, 664, TextDim, Small, 560);
+            DrawText(g, tab == 1 ? dir : std::to_string(recent.size()) + " jeu(x) récent(s)", 50, 666, TextDim, Small, HintsLeft(hints) - 90);
         }
         else if (tab == 2)
         {
             auto save = [&]() { settingsNote = WriteKeyValues(uiFile, general) ? "Enregistré : réglages de tous les jeux sans réglages propres." : "Impossible d'écrire " + uiFile; };
             settingItems = SettingItems(general, nullptr, true, save);
             DrawList(g, settingItems, settingsSt, ListX, ListY, 1200, 9, 58);
-            DrawText(g, settingsNote.empty() ? "Réglages généraux (un jeu peut avoir les siens : " UI_Y " dans la liste des jeux)" : settingsNote, 50, 664, settingsNote.empty() ? TextDim : AccentText, Small, 600);
+            DrawText(g, settingsNote.empty() ? "Un jeu peut avoir ses propres réglages : " UI_Y " dans la liste" : settingsNote, 50, 666, settingsNote.empty() ? TextDim : AccentText, Small, HintsLeft(hints) - 90);
         }
         else
             DrawHelp(g);

@@ -239,6 +239,13 @@ void DrawHints(Gfx* g, const std::vector<std::string>& hints, int y)
     }
 }
 
+int HintsLeft(const std::vector<std::string>& hints)
+{
+    int x = 1240;
+    for (const std::string& h : hints) x -= TextWidth(h, Small) + 36;
+    return x + 36;
+}
+
 void DrawFrame(Gfx* g, const std::string& title, const std::vector<std::string>& hints)
 {
     GfxClear(g);

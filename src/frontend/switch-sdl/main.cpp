@@ -337,6 +337,42 @@ static void MemLog(const char* label)
 
 int main(int argc, char** argv)
 {
+    // started from the album (applet mode): ~400 MB of memory instead of ~3.2 GB, not enough for the emulator (the JIT and
+    // the GPU driver crashed, sometimes restarting the console). Checked before anything else, and the message uses the
+    // text console of libnx (no GPU driver): say how to start in application mode, then quit
+    {
+        AppletType at = appletGetAppletType();
+        if (at != AppletType_Application && at != AppletType_SystemApplication)
+        {
+            consoleInit(nullptr);
+            padConfigureInput(8, HidNpadStyleSet_NpadStandard);
+            PadState pad;
+            padInitializeAny(&pad);
+            // ASCII only: the font of the libnx console has no accented letters
+            printf("\n\n\x1b[36m  melonDS Switch " SWITCH_APP_VERSION "\x1b[0m\n\n"
+                   "  melonDS Switch a ete lance depuis l'Album (mode applet) :\n"
+                   "  ce mode ne laisse pas assez de memoire a l'emulateur.\n\n"
+                   "  Lancez-le en mode application :\n"
+                   "   1. Dans le menu HOME, maintenez R en lancant un jeu (n'importe lequel).\n"
+                   "   2. Gardez R maintenu en choisissant l'utilisateur.\n"
+                   "   3. Le menu des homebrews s'ouvre : lancez melonDS Switch.\n\n"
+                   "  ---\n\n"
+                   "  Started from the Album (applet mode): not enough memory. Hold R while\n"
+                   "  starting any game from the HOME menu (and while choosing the user),\n"
+                   "  then start melonDS Switch from the homebrew menu.\n\n"
+                   "\x1b[36m  Appuyez sur un bouton pour quitter / press any button to quit.\x1b[0m\n");
+            consoleUpdate(nullptr);
+            while (appletMainLoop())
+            {
+                padUpdate(&pad);
+                if (padGetButtonsDown(&pad)) break;
+                consoleUpdate(nullptr);
+            }
+            consoleExit(nullptr);
+            return 0;
+        }
+    }
+
     mkdir(ConfigDir, 0777);
     // settings, saves and states of the versions before 0.2 (sdmc:/switch/melonds-fork): moved here, existing files kept
     int movedFiles = 0;
@@ -454,34 +490,29 @@ int main(int argc, char** argv)
     }
     logf("ui font: %s, menu fonts: %s\n", UIFont ? "ok" : "unavailable", Ui::Init() ? "ok" : "unavailable");
 
-    // started from the album (applet mode): ~400 MB of memory instead of ~3.2 GB, not enough for the emulator (the JIT and
-    // the GPU renderer crashed, sometimes restarting the console): say how to start in application mode instead
-    {
-        AppletType at = appletGetAppletType();
-        if (at != AppletType_Application && at != AppletType_SystemApplication)
-        {
-            logf("applet mode (type %d): not enough memory, message shown\n", (int)at);
-            Ui::Message(renderer, "Lancez melonDS Switch en mode application",
-                        "melonDS Switch a été lancé depuis l'Album (mode applet), qui ne laisse pas assez de mémoire à l'émulateur.\n\n"
-                        "Pour le lancer en mode application : maintenez " UI_R " en lançant un jeu (n'importe lequel) depuis le menu HOME, "
-                        "et gardez " UI_R " maintenu en choisissant l'utilisateur, jusqu'à l'ouverture du menu des homebrews.",
-                        "Quitter");
-            Ui::Shutdown();
-            if (UIFont) TTF_CloseFont(UIFont);
-            TTF_Quit();
-            plExit();
-            SDL_GL_DeleteContext(gfx.Context);
-            SDL_DestroyWindow(gfx.Window);
-            SDL_Quit();
-            if (clkOk) { if (oldClock) clkrstSetClockRate(&cpuSession, oldClock); clkrstCloseSession(&cpuSession); }
-            if (emcOk) clkrstCloseSession(&emcSession);
-            if (gpuOk) { if (oldGpuClock) clkrstSetClockRate(&gpuSession, oldGpuClock); clkrstCloseSession(&gpuSession); }
-            if (tsOk) tsSessionClose(&tsSession);
-            tsExit();
-            clkrstExit();
-            return 0;
-        }
-    }
+    // leaving before the game runs (applet mode, no game chosen, unreadable ROM): close everything like the normal exit
+    // does (returning with SDL and the GL context still open crashed the app: "the software was closed because an error
+    // occurred", seen when quitting the home screen)
+    auto earlyExit = [&]() {
+        Ui::Shutdown();
+        if (UIFont) TTF_CloseFont(UIFont);
+        UIFont = nullptr;
+        TTF_Quit();
+        plExit();
+        for (SDL_Joystick* j : joysticks)
+            if (j) SDL_JoystickClose(j);
+        SDL_GL_DeleteContext(gfx.Context);
+        SDL_DestroyWindow(gfx.Window);
+        SDL_Quit();
+        if (clkOk) { if (oldClock) clkrstSetClockRate(&cpuSession, oldClock); clkrstCloseSession(&cpuSession); }
+        if (emcOk) clkrstCloseSession(&emcSession);
+        if (gpuOk) { if (oldGpuClock) clkrstSetClockRate(&gpuSession, oldGpuClock); clkrstCloseSession(&gpuSession); }
+        if (tsOk) tsSessionClose(&tsSession);
+        tsExit();
+        clkrstExit();
+        logf("exit: early exit done\n");
+    };
+
 
     // display settings (menu), kept in ui.txt
     auto ui = ReadConfig("ui.txt");
@@ -529,7 +560,7 @@ int main(int argc, char** argv)
         if (romPath.empty())
         {
             logf("no ROM chosen\n");
-            Ui::Shutdown();
+            earlyExit();
             return 0;
         }
         FILE* f = fopen((std::string(ConfigDir) + "/lastrom.txt").c_str(), "w");
@@ -567,7 +598,8 @@ int main(int argc, char** argv)
     {
         logf("cannot read rom %s\n", romPath.c_str());
         Ui::Message(renderer, "Impossible de lire ce jeu", "Le fichier n'a pas pu être lu (ou il est trop petit pour être un jeu DS) :\n" + romPath, "Retour");
-        Ui::Shutdown();
+        GfxTexDestroy(&tex);
+        earlyExit();
         goHome();
         return 0;
     }
@@ -669,7 +701,10 @@ int main(int argc, char** argv)
         watchdogStop = true;
         watchdog.join();
         Ui::Message(renderer, "Ce fichier n'est pas un jeu DS valide", "melonDS n'a pas reconnu ce fichier comme une ROM de Nintendo DS :\n" + romPath, "Retour");
-        Ui::Shutdown();
+        if (audio) SDL_CloseAudioDevice(audio);
+        GfxTexDestroy(&tex);
+        nds.reset();
+        earlyExit();
         goHome();
         return 0;
     }
@@ -944,7 +979,7 @@ int main(int argc, char** argv)
                     if (useGpu) applyRenderer(true);
                     saveUi();
                 }});
-                items.push_back({"3D logicielle sur un 2e cœur", std::string(threaded3d ? "oui (logiciel)" : "non"), [&](int, bool) {
+                items.push_back({"3D sur un 2e cœur", std::string(threaded3d ? "oui (logiciel)" : "non"), [&](int, bool) {
                     threaded3d = !threaded3d;
                     if (!useGpu) applyRenderer(false);
                     saveUi();

@@ -42,11 +42,11 @@ namespace Ui
 #define UI_PLUS "\uE0EF"
 #define UI_MINUS "\uE0F0"
 #define UI_DPAD "\uE0EA"
-#define UI_DPAD_UD "\uE0EB"
-#define UI_DPAD_LR "\uE0EC"
+#define UI_UP "\uE0EB"
+#define UI_DOWN "\uE0EC"
+#define UI_DPAD_LR "\uE0ED\uE0EE"
 #define UI_LSTICK "\uE0C1"
 #define UI_RSTICK "\uE0C2"
-#define UI_RSTICK_PRESS "\uE0C5"
 
 extern const SDL_Color Text, TextDim, AccentText, Warn;
 // background, header bar, panels, selection
@@ -70,6 +70,8 @@ void Fill(Gfx* g, int x, int y, int w, int h, int r, int gr, int b, int a = 255)
 // whole screen: background, header with a title, and the hints at the bottom right ("\uE0E0 Jouer" ...)
 void DrawFrame(Gfx* g, const std::string& title, const std::vector<std::string>& hints);
 void DrawHints(Gfx* g, const std::vector<std::string>& hints, int y = 666);
+// x where the hints start (to keep other text at the bottom left of them)
+int HintsLeft(const std::vector<std::string>& hints);
 
 // ---- input ----
 enum Button { BtnNone = -1, BtnA = 0, BtnB, BtnX, BtnY, BtnLStick, BtnRStick, BtnL, BtnR, BtnZL, BtnZR, BtnPlus, BtnMinus,
