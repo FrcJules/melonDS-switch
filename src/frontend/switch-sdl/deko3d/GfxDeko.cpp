@@ -312,6 +312,13 @@ bool DkGfxInit(const std::function<void(const std::string&)>& say)
     return true;
 }
 
+static bool GpuBroken = false;
+
+void DkGfxMarkBroken()
+{
+    GpuBroken = true;
+}
+
 void* DkGfxDevice()
 {
     return S.Device;
@@ -319,7 +326,7 @@ void* DkGfxDevice()
 
 void DkGfxShutdown()
 {
-    if (!S.Device) return;
+    if (!S.Device || GpuBroken) return;
     if (S.FrameOpen) SubmitFrame(false);
     dkQueueWaitIdle(S.Queue);
     dkQueueDestroy(S.Queue);

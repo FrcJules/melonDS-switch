@@ -27,7 +27,8 @@
 
 #include "NDS.h"
 #include "Platform.h"
-#include "compute_shaders.h"   // generated: Cs<name>[] / Cs<name>Size, see GenComputeShaders.cpp
+#include "compute_shaders.h"
+#include "GfxDeko.h"   // generated: Cs<name>[] / Cs<name>Size, see GenComputeShaders.cpp
 
 namespace melonDS
 {
@@ -252,6 +253,25 @@ DekoRenderer3D::~DekoRenderer3D()
     delete[] ClearBitmap[1];
 }
 
+int DekoRenderer3D::DebugSync = 0;
+
+// diagnosis: runs what was recorded up to this pass and waits for it (GPU state persists between command lists)
+bool DekoRenderer3D::Checkpoint(const char* pass)
+{
+    if (!DebugSync || Broken) return !Broken;
+    dkQueueSubmitCommands(Queue, dkCmdBufFinishList(Cmd));
+    dkQueueSignalFence(Queue, &Fence, true);
+    if (dkFenceWait(&Fence, 300000000LL) != DkResult_Success)
+    {
+        Platform::Log(Platform::LogLevel::Error, "deko3d 3D: pass '%s' did not finish within 300 ms, 3D disabled\n", pass);
+        Broken = true;
+        DkGfxMarkBroken();
+        return false;
+    }
+    Platform::Log(Platform::LogLevel::Warn, "deko3d 3D: pass '%s' ok\n", pass);
+    return true;
+}
+
 // never waits forever: a GPU hang would freeze the whole app (no input, no exit)
 bool DekoRenderer3D::WaitPending(const char* where)
 {
@@ -260,6 +280,7 @@ bool DekoRenderer3D::WaitPending(const char* where)
     {
         Platform::Log(Platform::LogLevel::Error, "deko3d 3D: GPU did not finish the frame within 1 s (%s), 3D disabled\n", where);
         Broken = true;
+        DkGfxMarkBroken();
     }
     Pending = false;
     return !Broken;
@@ -884,6 +905,7 @@ void DekoRenderer3D::RenderFrame()
     }
     // texture uploads, clear bitmaps and setup indices are complete before the compute passes read them
     dkCmdBufBarrier(Cmd, DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_L2Cache);
+    if (!Checkpoint("uploads")) return;
 
     // bind everything (same slots as the GL version)
     DkBufExtents sbufs[8] =
@@ -969,6 +991,7 @@ void DekoRenderer3D::RenderFrame()
 
     useShader(shClearCoarseBinMask);
     dkCmdBufDispatchCompute(Cmd, TilesPerLine*TileLines/ClearCoarseBinMaskLocalSize, 1, 1);
+    if (!Checkpoint("ClearCoarseBinMask")) return;
 
     bool wbuffer = false;
     if (numYSpans > 0)
@@ -978,27 +1001,32 @@ void DekoRenderer3D::RenderFrame()
 
         useShader(shClearIndirectWorkCount);
         dkCmdBufDispatchCompute(Cmd, (numVariants+31)/32, 1, 1);
+        if (!Checkpoint("ClearIndirectWorkCount")) return;
 
         // calculate x-spans
         dkCmdBufBindImage(Cmd, DkStage_Compute, 0, dkMakeImageHandle(descYSpanIndices));
         useShader(wbuffer ? shInterpXSpansW : shInterpXSpansZ);
         dkCmdBufDispatchCompute(Cmd, (numSetupIndices + 31) / 32, 1, 1);
         dkCmdBufBarrier(Cmd, DkBarrier_Primitives, 0);
+        if (!Checkpoint("InterpXSpans")) return;
 
         // bin polygons
         useShader(shBinCombined);
         dkCmdBufDispatchCompute(Cmd, ((GPU3D.RenderNumPolygons + 31) / 32), ScreenWidth/CoarseTileW, ScreenHeight/CoarseTileH);
         dkCmdBufBarrier(Cmd, DkBarrier_Primitives, 0);
+        if (!Checkpoint("BinCombined")) return;
 
         // calculate list offsets
         useShader(shCalculateWorkOffsets);
         dkCmdBufDispatchCompute(Cmd, (numVariants + 31) / 32, 1, 1);
         dkCmdBufBarrier(Cmd, DkBarrier_Primitives, 0);
+        if (!Checkpoint("CalculateWorkOffsets")) return;
 
         // sort shader work
         useShader(shSortWork);
         dkCmdBufDispatchComputeIndirect(Cmd, binResult + offsetof(BinResultHeader, SortWorkWorkCount));
         dkCmdBufBarrier(Cmd, DkBarrier_Primitives, 0);
+        if (!Checkpoint("SortWork")) return;
 
         // tile buffers in slots 2-4 while rasterising
         DkBufExtents tiles[3] =
@@ -1064,6 +1092,7 @@ void DekoRenderer3D::RenderFrame()
                 ru.CaptureYOffset = 0.f;
                 dkCmdBufPushConstants(Cmd, DataGpu(OffRasterise), rastSize, 0, sizeof(RasteriseUniform), &ru);
                 dkCmdBufDispatchComputeIndirect(Cmd, binResult + offsetof(BinResultHeader, VariantWorkCount) + i*4*4);
+                if (DebugSync && !Checkpoint(i == 0 ? "Rasterise (variant 0)" : "Rasterise")) return;
             }
         }
     }
@@ -1077,6 +1106,7 @@ void DekoRenderer3D::RenderFrame()
     useShader(wbuffer ? shDepthBlendW : shDepthBlendZ);
     dkCmdBufDispatchCompute(Cmd, ScreenWidth/TileSize, ScreenHeight/TileSize, 1);
     dkCmdBufBarrier(Cmd, DkBarrier_Primitives, 0);
+    if (!Checkpoint("DepthBlend")) return;
 
     dkCmdBufBindImage(Cmd, DkStage_Compute, 0, dkMakeImageHandle(descFinalFB));
     u32 finalPassShader = 0;
@@ -1089,6 +1119,7 @@ void DekoRenderer3D::RenderFrame()
     useShader(shFinalPass + finalPassShader);
     dkCmdBufDispatchCompute(Cmd, ScreenWidth/32, ScreenHeight, 1);
     dkCmdBufBarrier(Cmd, DkBarrier_Full, DkInvalidateFlags_Image);
+    if (!Checkpoint("FinalPass")) return;
 
     // read back (GetLine)
     {
@@ -1102,6 +1133,7 @@ void DekoRenderer3D::RenderFrame()
     dkQueueSubmitCommands(Queue, dkCmdBufFinishList(Cmd));
     dkQueueSignalFence(Queue, &Fence, true);
     Pending = true;
+    if (DebugSync > 0) DebugSync--;   // checkpoints on the first N frames only
 }
 
 u32* DekoRenderer3D::GetLine(int line)

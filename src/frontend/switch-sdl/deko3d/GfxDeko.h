@@ -29,6 +29,8 @@ bool DkGfxInit(const std::function<void(const std::string&)>& say);
 void DkGfxShutdown();
 // the DkDevice (shared with the 3D renderer), null before DkGfxInit
 void* DkGfxDevice();
+// a GPU job never finished: at exit, leave the device alone (the system reclaims it with the process)
+void DkGfxMarkBroken();
 
 // textures: RGBA8, id >= 0 on success, -1 when the pool is full
 int DkTexCreate(int w, int h, bool linear);

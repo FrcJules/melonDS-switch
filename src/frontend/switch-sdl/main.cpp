@@ -1021,6 +1021,7 @@ int main(int argc, char** argv)
         {
             // 3D on the GPU through deko3d (compute renderer), 2D in software
             // SetRenderer calls Init() and falls back to the software renderer if it fails
+            DekoRenderer3D::DebugSync = cfg.count("dk3dsync") ? atoi(cfg["dk3dsync"].c_str()) : 0;
             nds->SetRenderer(std::make_unique<DekoSoftRenderer>(*nds, (DkDevice)DkGfxDevice()));
             logf("GPU renderer (deko3d compute, 1x) requested, 2D in software\n");
             return true;
