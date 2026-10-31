@@ -62,6 +62,18 @@ there automatically).
 | `<rom>.sav`, `<rom>.ss0..4` | game save, states |
 | `log.txt` | one line per second (fps, CPU clock, temperature...) |
 
+## Open a game from Sphaira (file association)
+melonDS Switch accepts a ROM as its first argument and starts it directly (the automatic state is loaded, as with "Continue").
+To open `.nds` files from Sphaira's file browser, create `sdmc:/config/sphaira/assoc/melonDS-Switch.ini`:
+
+```
+[config]
+path=/switch/melonDS-Switch/melonDS-Switch.nro
+supported_extensions=nds|dsi
+```
+
+Then press A on a ROM in Sphaira's file browser and choose "melonDS-Switch". Tested with Sphaira 1.0.8.
+
 ## Build
 devkitPro (devkitA64, libnx, portlibs `switch-sdl2`, `switch-sdl2_ttf`, `switch-freetype`, `switch-harfbuzz`,
 `switch-libpng`, `switch-bzip2`, `switch-zlib`, `switch-lz4`, `switch-mesa`):
