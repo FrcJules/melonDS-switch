@@ -906,6 +906,62 @@ static int GamePage(Gfx* g, Entry& e, const std::string& configDir, const KeyVal
     return result == -4 ? -3 : result;
 }
 
+// ---- first launch: nothing configured and no game found -> offer the folders of the card that hold games ----
+// returns the folder chosen ("" = none); browse = the user wants to look for it in the file browser
+static std::string Welcome(Gfx* g, bool& browse)
+{
+    static const char* const known[] = {"sdmc:/roms/nds", "sdmc:/roms/ds", "sdmc:/roms/nintendo ds", "sdmc:/roms/nintendo_ds", "sdmc:/games/nds", "sdmc:/nds", "sdmc:/roms/NDS", "sdmc:/roms/DS"};
+    std::vector<std::pair<std::string, int>> found;
+    // FAT is case-insensitive: show the folder with the case it really has on the card
+    auto realCase = [](const std::string& p) {
+        size_t cut = p.rfind('/');
+        std::string parent = p.substr(0, cut), name = LowerCase(p.substr(cut + 1));
+        if (parent.back() == ':') parent += "/";
+        if (DIR* d = opendir(parent.c_str()))
+        {
+            while (dirent* e = readdir(d))
+                if (LowerCase(e->d_name) == name) { std::string r = parent.back() == '/' ? parent + e->d_name : parent + "/" + e->d_name; closedir(d); return r; }
+            closedir(d);
+        }
+        return p;
+    };
+    auto add = [&](const std::string& p0) {
+        std::string p = realCase(p0);
+        for (auto& f : found) if (LowerCase(f.first) == LowerCase(p)) return;
+        std::vector<std::string> roms;
+        ScanDir(p, 2, roms);
+        if (!roms.empty()) found.push_back({p, (int)roms.size()});
+    };
+    for (const char* k : known) add(k);
+    if (found.empty()) add("sdmc:/roms");
+    std::string chosen;
+    bool later = false;
+    browse = false;
+    ListState st;
+    while (!chosen.size() && !browse && !later && appletMainLoop())
+    {
+        std::vector<Item> items;
+        for (auto& f : found)
+            items.push_back({f.first, std::to_string(f.second) + (f.second > 1 ? " jeux" : " jeu"), [&, p = f.first](int, bool act) { if (act) chosen = p; }});
+        items.push_back({"Chercher le dossier dans la carte SD", "", [&](int, bool act) { if (act) browse = true; }});
+        items.push_back({"Plus tard", "", [&](int, bool act) { if (act) later = true; }});
+        DrawFrame(g, "Bienvenue dans melonDS Switch", {UI_A " Choisir", UI_B " Plus tard"});
+        int y = 110 + DrawWrapped(g, "Pour jouer, copiez vos propres jeux (fichiers .nds) sur la carte SD, par exemple dans le dossier sdmc:/roms/nds. "
+                                     "melonDS ne contient aucun jeu et n'en fournit pas.", 60, 110, 1160, Text, Normal);
+        y += 14;
+        if (!found.empty()) y += DrawWrapped(g, "Des jeux ont été trouvés. Choisissez le dossier de votre bibliothèque :", 60, y, 1160, TextDim, Normal) + 10;
+        else y += DrawWrapped(g, "Aucun jeu trouvé dans les dossiers habituels : cherchez le dossier qui contient vos jeux.", 60, y, 1160, TextDim, Normal) + 10;
+        DrawList(g, items, st, 60, y, 1160, std::min(6, (int)((640 - y) / 58)), 58);
+        GfxPresent(g);
+        Trim();
+        Input in;
+        if (!Poll(in, 100)) continue;
+        if (in.Button == BtnB || in.Button == BtnPlus) later = true;
+        else ListInput(items, st, in, 60, y, 1160, std::min(6, (int)((640 - y) / 58)), 58);
+    }
+    return chosen;
+}
+
 HomeChoice RunHome(Gfx* g, const std::string& configDir, const std::string& startDir, const std::string& version)
 {
     const std::string recentFile = configDir + "/recent.txt", homeFile = configDir + "/home.txt", uiFile = configDir + "/ui.txt";
@@ -943,8 +999,19 @@ HomeChoice RunHome(Gfx* g, const std::string& configDir, const std::string& star
     };
     loadRecent();
     loadLibrary();
+    bool startInFiles = false;
+    if (!home.count("dirs") && !home.count("welcomed") && library.empty() && libDirs.empty())
+    {
+        bool browse = false;
+        std::string chosen = Welcome(g, browse);
+        home["welcomed"] = "1";
+        if (!chosen.empty()) { libDirs.push_back(chosen); loadLibrary(); }
+        startInFiles = browse;
+        saveHome();
+        ForgetIcons();
+    }
     enum { TabRecent, TabLibrary, TabFiles, TabSettings, TabHelp, TabCount };
-    int tab = recent.empty() ? TabLibrary : TabRecent;
+    int tab = startInFiles ? TabFiles : recent.empty() ? TabLibrary : TabRecent;
     ListState recentSt, libSt, fileSt, settingsSt;
     KeyValues general = ReadKeyValues(uiFile);
     std::string note;
