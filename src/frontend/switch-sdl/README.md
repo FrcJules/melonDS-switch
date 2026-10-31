@@ -5,7 +5,7 @@ Nintendo DS emulator for the Nintendo Switch (homebrew), based on the current me
 The official, older port is `melonDS-emu/melonDS-switch`.
 
 **AI disclosure**: the Switch frontend and the changes made for this port were written with an AI assistant (Claude),
-directed and tested on real hardware by FrcJules. The emulation core is melonDS (GPL-3.0), with one small fix (see below).
+directed and tested on real hardware by FrcJules. The emulation core is melonDS (GPL-3.0), with a few small fixes (see below).
 
 ## Features
 - ARM64 **JIT** + fastmem, OpenGL ES 3 renderer (Mesa) with **2x** internal resolution, or software renderer.
@@ -26,6 +26,10 @@ directed and tested on real hardware by FrcJules. The emulation core is melonDS 
   swapped screens, one screen bigger or alone, "book" rotation (90° / 270°), integer or fitted scale, gap. Per game.
 - **Automatic big screen**: while the bottom screen is black (0.5 s), the top screen is shown alone, as big as possible;
   the normal layout comes back as soon as the bottom screen shows something (can be turned off).
+- **In-game menu** (ZL+ZR+PLUS): short main page, a states page (load / save 1-4 with the picture of the selected
+  slot), screenshot (also ZL+ZR+A, PNG in `screenshots/`), display, controls, performance. Every row can be tapped.
+- **First launch**: a welcome screen proposes the folders of the card that hold games; a button adds the folder shown
+  in the file browser. **Open a game from Sphaira** with a file association (see below).
 - **Save states** (4 slots + automatic slot on exit), LZ4-compressed (~2.5 MB), saved in the background, last state kept
   in memory for instant reloads. Audio rate control without pitch wobble.
 
@@ -91,7 +95,9 @@ Result: `build-switch/src/frontend/switch-sdl/melonDS-switch.nro`.
 ## Core changes
 Besides the frontend: geometry and JIT speed-ups (output identical, checked with fixed-rate audio recordings), a
 GLES 3 path for the OpenGL renderer, and `NDSCart/CartRetailIR.cpp`: the IR cartridge returned an uninitialised value
-for IR commands that are not emulated (also fixed upstream in pending PR #2727). The registers of the hardware divider and
+for IR commands that are not emulated (also fixed upstream in pending PR #2727). `ARM::Reset` now clears `CodeCycles`, `DataCycles` and `DataRegion`: the JIT
+copied their leftover values into the instructions it compiled, so the same source built in two ways could run a game with
+different CPU timing (proposed upstream, PR #2791). The registers of the hardware divider and
 square root unit are now reset and saved in save states (state version 14.1; older states still load): they were left
 as leftover memory, so a game resuming a division after a state load could behave differently from build to build.
 States saved by 0.3 cannot be loaded by 0.2.
