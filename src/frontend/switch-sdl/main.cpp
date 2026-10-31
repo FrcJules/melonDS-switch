@@ -59,6 +59,7 @@
 #include "Args.h"
 #include "Gfx.h"
 #include "Controls.h"
+#include "LaunchArgs.h"
 #include "Layout.h"
 #include "RomInfo.h"
 #include "Ui.h"
@@ -550,11 +551,12 @@ int main(int argc, char** argv)
         else tex = GfxTexCreate(256, 384, filter != 0);
     };
 
-    // which ROM: rom= in config.txt starts it directly (test tools), otherwise the home screen (recent games first)
-    bool wantBrowse = false;
-    for (int i = 1; i < argc; i++)
-        if (!strcmp(argv[i], "--browse")) wantBrowse = true;
-    std::string romPath = cfg.count("rom") ? cfg["rom"] : "";
+    // which ROM: a ROM given by the launcher (Sphaira file association: argv[1]) starts it directly, then rom= in config.txt
+    // (test tools), otherwise the home screen (recent games first); "Continue" is automatic (the auto state is loaded if any)
+    const LaunchArgs launch = ParseLaunchArgs(argc, argv);
+    bool wantBrowse = launch.Browse;
+    std::string romPath = !launch.Rom.empty() ? launch.Rom : cfg.count("rom") ? cfg["rom"] : "";
+    if (!launch.Rom.empty()) logf("rom given on the command line: %s%s\n", launch.Rom.c_str(), FileExists(launch.Rom) ? "" : " (not found: home screen)");
     const std::string configRom = romPath;
     int homeLoadSlot = -2;   // state chosen on the game page of the home screen (-2: as configured)
     if (wantBrowse || romPath.empty() || !FileExists(romPath))
