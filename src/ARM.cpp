@@ -162,6 +162,12 @@ void ARM::Reset()
     // and slower) depending on how the frontend had used the heap before
     StopExecution = 0;
 
+    // written only by memory accesses, never reset: the JIT copies them into every FetchedInstr, also for instructions
+    // without a data access (failed condition, ...), so the cycle counts it compiled depended on leftover heap contents
+    CodeCycles = 0;
+    DataCycles = 0;
+    DataRegion = 0;
+
     for (int i = 0; i < 16; i++)
         R[i] = 0;
 
