@@ -23,6 +23,8 @@
 #include <dirent.h>
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <memory>
 #include <vector>
 
@@ -908,7 +910,7 @@ static int GamePage(Gfx* g, Entry& e, const std::string& configDir, const KeyVal
 
 // ---- first launch: nothing configured and no game found -> offer the folders of the card that hold games ----
 // returns the folder chosen ("" = none); browse = the user wants to look for it in the file browser
-static std::string Welcome(Gfx* g, bool& browse)
+static std::string Welcome(Gfx* g, bool& browse, bool hideFound)
 {
     static const char* const known[] = {"sdmc:/roms/nds", "sdmc:/roms/ds", "sdmc:/roms/nintendo ds", "sdmc:/roms/nintendo_ds", "sdmc:/games/nds", "sdmc:/nds", "sdmc:/roms/NDS", "sdmc:/roms/DS"};
     std::vector<std::pair<std::string, int>> found;
@@ -932,8 +934,11 @@ static std::string Welcome(Gfx* g, bool& browse)
         ScanDir(p, 2, roms);
         if (!roms.empty()) found.push_back({p, (int)roms.size()});
     };
-    for (const char* k : known) add(k);
-    if (found.empty()) add("sdmc:/roms");
+    if (!hideFound)   // home.txt welcomefake=1: pretend no game is found (test of the empty card)
+    {
+        for (const char* k : known) add(k);
+        if (found.empty()) add("sdmc:/roms");
+    }
     std::string chosen;
     bool later = false;
     browse = false;
@@ -1000,10 +1005,10 @@ HomeChoice RunHome(Gfx* g, const std::string& configDir, const std::string& star
     loadRecent();
     loadLibrary();
     bool startInFiles = false;
-    if (!home.count("dirs") && !home.count("welcomed") && library.empty() && libDirs.empty())
+    if (!home.count("dirs") && (!home.count("welcomed") || home.count("welcomefake")) && library.empty() && libDirs.empty())
     {
         bool browse = false;
-        std::string chosen = Welcome(g, browse);
+        std::string chosen = Welcome(g, browse, home.count("welcomefake") && home["welcomefake"] == "1");
         home["welcomed"] = "1";
         if (!chosen.empty()) { libDirs.push_back(chosen); loadLibrary(); }
         startInFiles = browse;
@@ -1013,6 +1018,11 @@ HomeChoice RunHome(Gfx* g, const std::string& configDir, const std::string& star
     enum { TabRecent, TabLibrary, TabFiles, TabSettings, TabHelp, TabCount };
     int tab = startInFiles ? TabFiles : recent.empty() ? TabLibrary : TabRecent;
     ListState recentSt, libSt, fileSt, settingsSt;
+    // light animations: the tab underline slides, the screen fades in when the home screen opens
+    float ulX = -1, ulW = 0;
+    const auto openedAt = std::chrono::steady_clock::now();
+    // button of the file browser (Y without a controller): adds the folder shown to the library
+    const int AddX = 830, AddY = 560, AddW = 400, AddH = 64;
     KeyValues general = ReadKeyValues(uiFile);
     std::string note;
     static const char* tabs[] = {"Récents", "Bibliothèque", "Fichiers", "Réglages", "Aide"};
@@ -1049,10 +1059,19 @@ HomeChoice RunHome(Gfx* g, const std::string& configDir, const std::string& star
             tx -= tabW[i];
             tabX[i] = tx;
         }
+        bool animating = false;
         for (int i = 0; i < TabCount; i++)
         {
             DrawText(g, tabs[i], tabX[i] + 15, 30, i == tab ? AccentText : TextDim, Normal);
-            if (i == tab) Fill(g, tabX[i] + 8, 76, tabW[i] - 16, 4, 0, 200, 235);
+            if (i == tab)
+            {
+                float tx0 = (float)tabX[i] + 8, tw0 = (float)tabW[i] - 16;
+                if (ulX < 0) { ulX = tx0; ulW = tw0; }
+                ulX += (tx0 - ulX) * 0.35f; ulW += (tw0 - ulW) * 0.35f;
+                if (std::fabs(tx0 - ulX) < 1 && std::fabs(tw0 - ulW) < 1) { ulX = tx0; ulW = tw0; }
+                else animating = true;
+                Fill(g, (int)ulX, 76, (int)ulW, 4, 0, 200, 235);
+            }
         }
         Fill(g, 30, 88, 1220, 1, 90, 96, 106);
         Fill(g, 30, 646, 1220, 1, 90, 96, 106);
@@ -1063,7 +1082,7 @@ HomeChoice RunHome(Gfx* g, const std::string& configDir, const std::string& star
         {
             if (list.empty())
                 DrawWrapped(g, tab == TabRecent ? "Aucun jeu lancé récemment." :
-                               tab == TabLibrary ? (libDirs.empty() ? "La bibliothèque est vide : dans l'onglet « Fichiers », ouvrez le dossier de vos jeux et appuyez sur " UI_Y "." : "Aucun jeu (.nds) dans les dossiers de la bibliothèque.")
+                               tab == TabLibrary ? (libDirs.empty() ? "La bibliothèque est vide : dans l'onglet « Fichiers », ouvrez le dossier de vos jeux et appuyez sur " UI_Y " (ou touchez « Ajouter ce dossier »)." : "Aucun jeu (.nds) dans les dossiers de la bibliothèque.")
                                : "Aucun jeu (.nds) dans ce dossier.", 80, 140, 1100, TextDim, Normal);
             if (grid) DrawGrid(g, list, st, configDir);
             else
@@ -1106,11 +1125,19 @@ HomeChoice RunHome(Gfx* g, const std::string& configDir, const std::string& star
             DrawHelp(g);
         if (!footer.empty()) DrawText(g, footer, 50, 666, note.empty() || gameTab ? TextDim : AccentText, Small, HintsLeft(hints) - 90);
         DrawHints(g, hints);
+        if (tab == TabFiles && !grid)
+        {
+            bool in_ = std::find(libDirs.begin(), libDirs.end(), dir) != libDirs.end();
+            Fill(g, AddX, AddY, AddW, AddH, in_ ? 45 : 0, in_ ? 52 : 120, in_ ? 60 : 150);
+            DrawText(g, in_ ? "Déjà dans la bibliothèque" : "Ajouter ce dossier", AddX + AddW / 2, AddY + 18, Text, Normal, AddW - 20, 1);
+        }
+        long fadeMs = (long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - openedAt).count();
+        if (fadeMs < 250) { Fill(g, 0, 0, 1280, 720, 35, 38, 44, (int)(255 - fadeMs * 255 / 250)); animating = true; }
         GfxPresent(g);
         Trim();
 
         Input in;
-        if (!Poll(in, 100)) continue;
+        if (!Poll(in, animating ? 16 : 100)) continue;
         if (in.Button == BtnPlus || in.Button == BtnMinus) return HomeChoice();
         if (in.Button == BtnL || in.Button == BtnR || in.Button == BtnZL || in.Button == BtnZR)
         {
@@ -1185,7 +1212,7 @@ HomeChoice RunHome(Gfx* g, const std::string& configDir, const std::string& star
         else if (in.Button == BtnA && sel) { HomeChoice c = open(*sel); if (!c.Path.empty()) return c; }
         else if (in.Button == BtnX && sel) toggleFav(*sel);
         else if (in.Button == BtnB && tab == TabFiles && !files.empty() && files[0].Up) open(files[0]);
-        else if (in.Button == BtnY && tab == TabFiles)
+        else if ((in.Button == BtnY && tab == TabFiles) || (in.Tap && tab == TabFiles && !grid && in.TouchX >= AddX && in.TouchX < AddX + AddW && in.TouchY >= AddY && in.TouchY < AddY + AddH))
         {
             if (std::find(libDirs.begin(), libDirs.end(), dir) == libDirs.end()) libDirs.push_back(dir);
             saveHome();
