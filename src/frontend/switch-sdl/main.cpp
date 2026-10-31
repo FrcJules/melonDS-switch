@@ -22,6 +22,7 @@
 //   audiointerp=0..4 (none, linear, cosine, cubic, gaussian; default 3)   autosave=0|1   autoload=1|0 (default on)   loadslot=0..4 (state loaded at start)   jitblock=1..256 (default 32) jitliteral=0|1 jitbranch=0|1   itercycles=16..512 (main-loop step, default 128; melonDS uses 64)   audioctl=0|1   audioskew=<ratio>   audiodump=<seconds>   sampler=<seconds> (sampling profiler, samples.bin)
 // Save states (next to the config, named after the ROM: <rom>.ss<slot>, slot 0 = automatic):
 //   hold ZL + ZR, then X = save, Y = load, left/right = choose slot 1..4 (squares on the left show the slot, colour = result).
+// Screenshot: hold ZL + ZR, then A (PNG of both screens in screenshots/), or the menu.
 // Screens (Layout.h): hold ZL + ZR, then up = next layout (vertical, horizontal, hybrid), MINUS = swap the screens; more in
 //   the menu (Affichage). The top screen is shown alone while the bottom one is black (can be turned off).
 //   The state is also saved automatically on exit (slot 0) and loaded at start.
@@ -61,6 +62,7 @@
 #include "Controls.h"
 #include "LaunchArgs.h"
 #include "Layout.h"
+#include "Png.h"
 #include "RomInfo.h"
 #include "Ui.h"
 #include "UiHome.h"
@@ -848,6 +850,7 @@ int main(int argc, char** argv)
     };
     // screenshot of both screens saved with each state (<state>.thumb, 128x192), shown on the game page
     std::function<std::vector<u8>()> captureThumb;
+    std::function<std::vector<u8>()> captureFull;   // both screens at 1x, 256x384 RGBA, top to bottom
     auto saveState = [&](int s, bool background) -> bool {
         Savestate st;
         if (st.Error) return false;
@@ -968,7 +971,7 @@ int main(int argc, char** argv)
         }
     };
 
-    captureThumb = [&]() -> std::vector<u8> {
+    captureFull = [&]() -> std::vector<u8> {
         // both screens drawn at 1x into an offscreen 1280x720 target (same drawing path as the display), read back
         // (a short GPU stall, only when a state is saved), then halved to 128x192
         static GLuint fbo = 0, fboTex = 0;
@@ -992,44 +995,78 @@ int main(int argc, char** argv)
         std::vector<u8> full(256 * 384 * 4);
         glReadPixels(0, 720 - 384, 256, 384, GL_RGBA, GL_UNSIGNED_BYTE, full.data());
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        // GL rows go bottom-up: flip while averaging 2x2 blocks
+        // GL rows go bottom-up: flip
+        std::vector<u8> out(256 * 384 * 4);
+        for (int y = 0; y < 384; y++)
+            memcpy(&out[(size_t)y * 256 * 4], &full[(size_t)(383 - y) * 256 * 4], 256 * 4);
+        return out;
+    };
+    captureThumb = [&]() -> std::vector<u8> {
+        // halved to 128x192 (averaging 2x2 blocks)
+        std::vector<u8> full = captureFull();
         std::vector<u8> out(128 * 192 * 4);
         for (int y = 0; y < 192; y++)
             for (int x = 0; x < 128; x++)
                 for (int c = 0; c < 4; c++)
                 {
-                    int sy = 383 - y * 2;
-                    int v = full[((sy * 256) + x * 2) * 4 + c] + full[((sy * 256) + x * 2 + 1) * 4 + c]
-                          + full[(((sy - 1) * 256) + x * 2) * 4 + c] + full[(((sy - 1) * 256) + x * 2 + 1) * 4 + c];
+                    int v = full[((y * 2) * 256 + x * 2) * 4 + c] + full[((y * 2) * 256 + x * 2 + 1) * 4 + c]
+                          + full[((y * 2 + 1) * 256 + x * 2) * 4 + c] + full[((y * 2 + 1) * 256 + x * 2 + 1) * 4 + c];
                     out[(y * 128 + x) * 4 + c] = c == 3 ? 255 : (u8)(v / 4);
                 }
         return out;
     };
 
+    // screenshot of both screens (256x384 PNG) in screenshots/, named after the game and the console clock; returns the message to show
+    auto takeScreenshot = [&]() -> std::string {
+        std::string dir = std::string(ConfigDir) + "/screenshots";
+        mkdir(dir.c_str(), 0777);
+        time_t t = time(nullptr);
+        struct tm* tm = localtime(&t);
+        char stamp[32] = "0";
+        if (tm) strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", tm);
+        std::string name = StripExt(BaseName(romPath)) + "_" + stamp + ".png";
+        bool ok = WritePng(dir + "/" + name, captureFull(), 256, 384);
+        logf("screenshot %s: %s\n", name.c_str(), ok ? "ok" : "FAILED");
+        return ok ? "Capture enregistrée (screenshots/)" : "Échec de la capture d'écran.";
+    };
+
     // in-game menu (ZL + ZR + PLUS): emulation is paused. Returns 0 = resume, 1 = change ROM, 2 = quit
-    // Two pages: the main one and "Affichage" (screen layout), whose changes show at once on the paused frame behind.
+    // Pages: main (short), "États" (load / save slots 1-4 with the screenshot of the selected one), "Capture" is a main entry,
+    // "Affichage" (screen layout, changes show at once on the paused frame behind), "Performances" (CPU, renderer, resolution).
+    // Everything works by touch too (tap a row).
     auto runMenu = [&]() -> int {
         if (audio) SDL_PauseAudioDevice(audio, 1);
         const int prevStage = DebugStage;
         DebugStage = 99;   // paused: the watchdog must not report a hang
         int page = 0, result = -1;
-        Ui::ListState pageSt[2];
+        enum { PageMain, PageDisplay, PagePerf, PageStates };
+        Ui::ListState pageSt[4];
         std::string note;
         auto onOff = [](bool v) { return std::string(v ? "oui" : "non"); };
         auto display = [&]() { computeLayout(); saveUi(); };
+        int shownPage = page;
         while (result < 0 && appletMainLoop())
         {
+            if (page != shownPage) { shownPage = page; note.clear(); }
             std::vector<Ui::Item> items;
-            if (page == 0)
+            if (page == PageMain)
             {
                 items.push_back({"Reprendre", "", [&](int, bool act) { if (act) result = 0; }});
-                items.push_back({"Affichage", "", [&](int, bool act) { if (act) page = 1; }});
+                items.push_back({"États", "", [&](int, bool act) { if (act) page = PageStates; }});
+                items.push_back({"Capture d'écran", "", [&](int, bool act) { if (act) note = takeScreenshot(); }});
+                items.push_back({"Affichage", "", [&](int, bool act) { if (act) page = PageDisplay; }});
                 items.push_back({"Commandes", profiles[profileIdx].Name, [&](int dir, bool) {
                     int n = (int)profiles.size();
                     profileIdx = (profileIdx + (dir < 0 ? n - 1 : 1)) % n;
                     controlsId = profiles[profileIdx].Id;   // remembered for this game (held keys are reset when the menu closes)
                     saveUi();
                 }});
+                items.push_back({"Performances", "", [&](int, bool act) { if (act) page = PagePerf; }});
+                items.push_back({"Changer de jeu", "", [&](int, bool act) { if (act) result = 1; }});
+                items.push_back({"Quitter", "", [&](int, bool act) { if (act) result = 2; }});
+            }
+            else if (page == PagePerf)
+            {
                 items.push_back({"Fréquence CPU", (autoClock ? "auto (" + std::to_string(overclockMHz) + " MHz)" : std::to_string(overclockMHz) + " MHz"), [&](int dir, bool) {
                     const int steps[] = {0, 1020, 1224, 1581, 1785};   // 0 = auto
                     int idx = 0;
@@ -1061,25 +1098,38 @@ int main(int argc, char** argv)
                     if (!useGpu) applyRenderer(false);
                     saveUi();
                 }});
-                items.push_back({"Emplacement d'état", std::to_string(slot), [&](int dir, bool) { slot = dir ? std::clamp(slot + dir, 1, 4) : slot % 4 + 1; }});
-                items.push_back({"Sauvegarder l'état", "", [&](int, bool act) {
-                    if (!act) return;
-                    bool ok = saveState(slot, true);
-                    logf("save state slot %d: %s\n", slot, ok ? "ok" : "FAILED");
-                    note = ok ? "État sauvegardé." : "Échec de la sauvegarde.";
-                }});
-                items.push_back({"Charger l'état", "", [&](int, bool act) {
-                    if (!act) return;
-                    bool ok = loadState(slot);
-                    stateLoaded |= ok;
-                    logf("load state slot %d: %s\n", slot, ok ? "ok" : "FAILED");
-                    note = ok ? "État chargé." : "Aucun état dans cet emplacement.";
-                    if (ok) result = 0;
-                }});
-                items.push_back({"Changer de jeu", "", [&](int, bool act) { if (act) result = 1; }});
-                items.push_back({"Quitter", "", [&](int, bool act) { if (act) result = 2; }});
+                items.push_back({"Retour", "", [&](int, bool act) { if (act) page = PageMain; }});
             }
-            else
+            else if (page == PageStates)
+            {
+                // rows 0-3: load 1-4, rows 4-7: save 1-4; the screenshot shown on the right is the one of the selected slot
+                for (int s2 = 1; s2 <= 4; s2++)
+                {
+                    std::string d = FileDate(statePath(s2));
+                    items.push_back({"Charger l'état " + std::to_string(s2), d.empty() ? "vide" : d, [&, s2](int, bool act) {
+                        if (!act) return;
+                        slot = s2;
+                        bool ok = loadState(s2);
+                        stateLoaded |= ok;
+                        logf("load state slot %d: %s\n", s2, ok ? "ok" : "FAILED");
+                        note = ok ? "État chargé." : "Aucun état dans cet emplacement.";
+                        if (ok) result = 0;
+                    }});
+                }
+                for (int s2 = 1; s2 <= 4; s2++)
+                {
+                    std::string d = FileDate(statePath(s2));
+                    items.push_back({"Sauver l'état " + std::to_string(s2), d.empty() ? "vide" : d, [&, s2](int, bool act) {
+                        if (!act) return;
+                        slot = s2;
+                        bool ok = saveState(s2, true);
+                        logf("save state slot %d: %s\n", s2, ok ? "ok" : "FAILED");
+                        note = ok ? "État " + std::to_string(s2) + " sauvegardé." : "Échec de la sauvegarde.";
+                    }});
+                }
+                items.push_back({"Retour", "", [&](int, bool act) { if (act) page = PageMain; }});
+            }
+            else   // PageDisplay
             {
                 items.push_back({"Disposition", LayoutName(disp.Layout), [&](int dir, bool) { disp.Layout = (disp.Layout + (dir < 0 ? 2 : 1)) % 3; display(); }});
                 if (disp.Layout == 2)
@@ -1100,26 +1150,43 @@ int main(int argc, char** argv)
                 items.push_back({"Grand écran si le bas est noir", onOff(disp.AutoTop), [&](int, bool) { disp.AutoTop = !disp.AutoTop; bottomBlack.Reset(); display(); }});
                 items.push_back({"Filtre", std::string(filter ? "lissé" : "pixels nets"), [&](int, bool) { filter ^= 1; makeTexture(); saveUi(); }});
                 items.push_back({"Afficher les fps", onOff(showFps), [&](int, bool) { showFps = !showFps; saveUi(); }});
-                items.push_back({"Retour", "", [&](int, bool act) { if (act) page = 0; }});
+                items.push_back({"Retour", "", [&](int, bool act) { if (act) page = PageMain; }});
             }
             GfxClear(renderer);
             drawScreens();
             // panel on the left: on the display page the screens stay visible behind
-            Ui::Fill(renderer, 0, 0, 1280, 720, 10, 14, 22, page == 1 ? 60 : 140);
+            Ui::Fill(renderer, 0, 0, 1280, 720, 10, 14, 22, page == PageDisplay ? 60 : 140);
             Ui::Fill(renderer, 0, 0, 620, 720, 35, 38, 44, 242);
-            Ui::DrawText(renderer, page == 0 ? "melonDS Switch" : "Affichage", 40, 22, Ui::Text, Ui::Big);
-            if (page == 0) Ui::DrawText(renderer, SWITCH_APP_VERSION, 40 + Ui::TextWidth("melonDS Switch", Ui::Big) + 12, 36, Ui::TextDim, Ui::Small);
+            static const char* const titles[] = {"melonDS Switch", "Affichage", "Performances", "États"};
+            Ui::DrawText(renderer, titles[page], 40, 22, Ui::Text, Ui::Big);
+            if (page == PageStates)
+            {
+                Ui::Fill(renderer, 620, 0, 660, 720, 10, 14, 22, 200);
+                // screenshot saved with the selected slot
+                int sl = pageSt[PageStates].Sel < 8 ? pageSt[PageStates].Sel % 4 + 1 : slot;
+                std::string tp = statePath(sl) + ".thumb";
+                std::vector<uint32_t> px;
+                int tw = 0, th = 0;
+                if (ReadThumb(tp, px, tw, th))
+                {
+                    Ui::DrawImage(renderer, tp + FileDate(tp), px.data(), tw, th, 760, 100, 384, 576, true);
+                    Ui::DrawText(renderer, "État " + std::to_string(sl) + "  " + FileDate(tp), 952, 40, Ui::TextDim, Ui::Small, 380, 1);
+                }
+                else
+                    Ui::DrawText(renderer, "État " + std::to_string(sl) + " : aucune image", 952, 380, Ui::TextDim, Ui::Small, 380, 1);
+            }
+            if (page == PageMain) Ui::DrawText(renderer, SWITCH_APP_VERSION, 40 + Ui::TextWidth("melonDS Switch", Ui::Big) + 12, 36, Ui::TextDim, Ui::Small);
             Ui::Fill(renderer, 20, 84, 580, 1, 90, 96, 106);
             Ui::DrawList(renderer, items, pageSt[page], 16, 96, 580, 10, 54);
             Ui::Fill(renderer, 20, 646, 580, 1, 90, 96, 106);
             if (!note.empty()) Ui::DrawText(renderer, note, 40, 606, Ui::AccentText, Ui::Small, 560);
-            Ui::DrawText(renderer, page == 0 ? UI_A " Valider   " UI_DPAD_LR " Changer   " UI_B " Reprendre" : UI_A " / " UI_DPAD_LR " Changer   " UI_B " Retour", 40, 666, Ui::Text, Ui::Small);
+            Ui::DrawText(renderer, page == PageMain ? UI_A " Valider   " UI_DPAD_LR " Changer   " UI_B " Reprendre" : UI_A " / " UI_DPAD_LR " Changer   " UI_B " Retour", 40, 666, Ui::Text, Ui::Small, 570);
             GfxPresent(renderer);
             Ui::Trim();
 
             Ui::Input in;
             if (!Ui::Poll(in, 200)) continue;
-            if (in.Button == Ui::BtnB) { if (page == 1) page = 0; else result = 0; }
+            if (in.Button == Ui::BtnB) { if (page != PageMain) page = PageMain; else result = 0; }
             else if (in.Button == Ui::BtnPlus) result = 0;
             else Ui::ListInput(items, pageSt[page], in, 16, 96, 580, 10, 54);
         }
@@ -1224,6 +1291,10 @@ int main(int argc, char** argv)
                         if (ok) primeAudio(200);
                         feedback(ok ? 50 : 220, ok ? 120 : 40, ok ? 230 : 40, slot);
                         autoFrameCount = 0;
+                    }
+                    else if (b == 0)
+                    {
+                        showNote(takeScreenshot());   // ZL + ZR + A: screenshot
                     }
                     else if (b == 10)
                     {

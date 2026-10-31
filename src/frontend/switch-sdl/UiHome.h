@@ -46,6 +46,8 @@ HomeChoice RunHome(Gfx* g, const std::string& configDir, const std::string& star
 
 // screenshot saved next to a state (<state file>.thumb): "MDTH", u16 width, u16 height, RGBA pixels
 bool WriteThumb(const std::string& path, const std::vector<unsigned char>& rgba, int w, int h);
+// modification date of a file as "dd/mm HH:MM" ("" if missing)
+std::string FileDate(const std::string& path);
 bool ReadThumb(const std::string& path, std::vector<uint32_t>& rgba, int& w, int& h);
 
 #endif

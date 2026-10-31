@@ -46,7 +46,8 @@ there automatically).
 |---|---|
 | D-pad / left stick, A B X Y, L R, + (Start), - (Select) | DS buttons |
 | Right stick | touch screen, depending on the control profile: cursor + R3 to touch (standard), direct stylus (the stick position is the stylus, Star Fox Command), aim (the stylus is dragged like a mouse, Metroid Prime Hunters) |
-| ZL + ZR + PLUS | menu (display, CPU, renderer, resolution, states, change game, quit) |
+| ZL + ZR + PLUS | menu: resume, states (load / save 1-4 with the screenshot of the selected slot), screenshot, display, controls, performance (CPU, renderer, resolution), change game, quit; every row can be tapped |
+| ZL + ZR + A | screenshot of both screens (256x384 PNG) in `screenshots/` |
 | ZL + ZR held, then X / Y / left / right | save state / load state / slot 1-4 |
 | ZL + ZR held, then up / MINUS | next layout (vertical, horizontal, hybrid) / swap the screens (hybrid: big screen top or bottom) |
 | ZL + ZR + B | quit (the state is saved in slot 0 and reloaded next time); also in the menu |
@@ -60,6 +61,7 @@ there automatically).
 | `<rom>.ui` | settings of that game: layout, renderer, resolution, CPU |
 | `recent.txt`, `home.txt` | recent games, last folder of the game browser |
 | `<rom>.sav`, `<rom>.ss0..4` | game save, states |
+| `screenshots/` | PNG screenshots (`<rom>_<date>-<time>.png`, console clock) |
 | `log.txt` | one line per second (fps, CPU clock, temperature...) |
 
 ## Open a game from Sphaira (file association)

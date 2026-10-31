@@ -805,7 +805,7 @@ static std::string StateFile(const std::string& configDir, const std::string& ro
     return configDir + "/" + StripExt(BaseName(rom)) + ".ss" + std::to_string(slot);
 }
 
-static std::string FileDate(const std::string& path)
+std::string FileDate(const std::string& path)
 {
     struct stat st;
     if (stat(path.c_str(), &st) != 0) return "";

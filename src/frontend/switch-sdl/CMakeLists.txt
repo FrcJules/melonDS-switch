@@ -12,6 +12,7 @@ add_executable(melonDS-switch
     Controls.cpp
     Layout.cpp
     RomInfo.cpp
+    Png.cpp
     Ui.cpp
     UiHome.cpp
     ../ScreenLayout.cpp
