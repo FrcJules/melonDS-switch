@@ -482,7 +482,8 @@ void NDS::Reset()
     memset(SharedWRAM, 0, 0x8000);
     memset(ARM7WRAM, 0, 0x10000);
 
-    MapSharedWRAM(0);
+    // forced: with WRAMCnt already 0 (new object) the mapping was never set up
+    MapSharedWRAM(0, true);
 
     // TODO FIX THOSE VALUES
     // TODO figure out what they should be
@@ -765,7 +766,7 @@ bool NDS::DoSavestate(Savestate* file)
     {
         // 'dept of redundancy dept'
         // but we do need to update the mappings
-        MapSharedWRAM(WRAMCnt);
+        MapSharedWRAM(WRAMCnt, true);   // forced: WRAMCnt already holds the loaded value
 
         InitTimings();
         SetGBASlotTimings();
@@ -1339,9 +1340,9 @@ void NDS::SetExMemCnt(u32 cpu, u16 val, u16 mask)
 }
 
 
-void NDS::MapSharedWRAM(u8 val)
+void NDS::MapSharedWRAM(u8 val, bool force)
 {
-    if (val == WRAMCnt)
+    if (val == WRAMCnt && !force)
         return;
 
     JIT.Memory.RemapSWRAM();
