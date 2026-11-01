@@ -109,6 +109,7 @@ static const std::vector<SettingDef>& Defs()
         {"cpu", "Fréquence CPU", {{"0", "auto"}, {"1020", "1020 MHz"}, {"1224", "1224 MHz"}, {"1581", "1581 MHz"}, {"1785", "1785 MHz"}}, "0"},
         {"filter", "Filtre", {{"0", "pixels nets"}, {"1", "lissé"}}, "0"},
         {"showfps", "Afficher les fps", {{"0", "non"}, {"1", "oui"}}, "0"},
+        {"layoutkeys", "Raccourcis de disposition (ZL+ZR+Haut / Moins)", {{"1", "activés"}, {"0", "désactivés"}}, "1"},
     };
     return defs;
 }
@@ -178,6 +179,7 @@ static std::vector<Item> SettingItems(KeyValues& kv, const KeyValues* fallback, 
         header("Affichage");
         AddSetting(items, kv, fallback, "filter", changed);
         AddSetting(items, kv, fallback, "showfps", changed);
+        AddSetting(items, kv, fallback, "layoutkeys", changed);
     }
     return items;
 }

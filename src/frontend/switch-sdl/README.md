@@ -53,7 +53,7 @@ there automatically).
 | ZL + ZR + PLUS | menu: resume, states (load / save 1-4 with the screenshot of the selected slot), screenshot, display, controls, performance (CPU, renderer, resolution), change game, quit; every row can be tapped |
 | ZL + ZR + A | screenshot of both screens (256x384 PNG) in `screenshots/` |
 | ZL + ZR held, then X / Y / left / right | save state / load state / slot 1-4 |
-| ZL + ZR held, then up / MINUS | next layout (vertical, horizontal, hybrid) / swap the screens (hybrid: big screen top or bottom) |
+| ZL + ZR held, then up / MINUS | next layout (vertical, horizontal, hybrid) / swap the screens (hybrid: big screen top or bottom); can be turned off (Settings, or menu > Display > "Raccourcis de disposition", or `layoutkeys=0` in `ui.txt`) |
 | ZL + ZR + B | quit (the state is saved in slot 0 and reloaded next time); also in the menu |
 | L + R + PLUS + MINUS | goes to the game (soft reset to the title screen in many games) |
 

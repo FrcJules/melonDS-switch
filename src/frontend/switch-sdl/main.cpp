@@ -23,7 +23,8 @@
 // Save states (next to the config, named after the ROM: <rom>.ss<slot>, slot 0 = automatic):
 //   hold ZL + ZR, then X = save, Y = load, left/right = choose slot 1..4 (squares on the left show the slot, colour = result).
 // Screenshot: hold ZL + ZR, then A (PNG of both screens in screenshots/), or the menu.
-// Screens (Layout.h): hold ZL + ZR, then up = next layout (vertical, horizontal, hybrid), MINUS = swap the screens; more in
+// Screens (Layout.h): hold ZL + ZR, then up = next layout (vertical, horizontal, hybrid), MINUS = swap the screens (can be
+//   turned off: ui.txt layoutkeys=0, or Settings / menu > Display); more in
 //   the menu (Affichage). The top screen is shown alone while the bottom one is black (can be turned off).
 //   The state is also saved automatically on exit (slot 0) and loaded at start.
 // Every second a line "t fps avg_ms max_ms" is appended to sdmc:/switch/melonDS-Switch/log.txt.
@@ -502,6 +503,7 @@ int main(int argc, char** argv)
     disp.Read(ui);
     int filter = ui.count("filter") ? atoi(ui["filter"].c_str()) : 0;     // 0 sharp pixels, 1 smooth
     bool showFps = ui.count("showfps") && ui["showfps"] == "1";
+    bool layoutKeys = !ui.count("layoutkeys") || ui["layoutkeys"] != "0";   // ZL+ZR+Up / Minus change the layout (global, can be turned off)
     // filter and fps are global (ui.txt); the screen layout, renderer, resolution and CPU chosen in the menu are saved for
     // the running game (<rom>.ui), ui.txt keeps them as the defaults of the other games
     std::string gameUiFile;
@@ -536,7 +538,7 @@ int main(int argc, char** argv)
     auto saveUi = [&]() {
         FILE* f = fopen((std::string(ConfigDir) + "/ui.txt").c_str(), "w");
         if (!f) return;
-        fprintf(f, "%sfilter=%d\nshowfps=%d\n", disp.Write().c_str(), filter, showFps ? 1 : 0);
+        fprintf(f, "%sfilter=%d\nshowfps=%d\nlayoutkeys=%d\n", disp.Write().c_str(), filter, showFps ? 1 : 0, layoutKeys ? 1 : 0);
         for (const char* k : {"cpu", "threaded", "gpu", "gpuscale", "controls"})
             if (ui0.count(k)) fprintf(f, "%s=%s\n", k, ui0[k].c_str());
         fclose(f);
@@ -587,6 +589,7 @@ int main(int argc, char** argv)
         disp.Read(ui);
         filter = ui.count("filter") ? atoi(ui["filter"].c_str()) : 0;
         showFps = ui.count("showfps") && ui["showfps"] == "1";
+        layoutKeys = !ui.count("layoutkeys") || ui["layoutkeys"] != "0";
         if (!cfg.count("gpu") && ui0.count("gpu")) useGpu = ui0["gpu"] == "1";
         if (!cfg.count("gpuscale") && ui0.count("gpuscale")) gpuScale = std::clamp(atoi(ui0["gpuscale"].c_str()), 1, 3);
         if (!cfg.count("threaded3d") && ui0.count("threaded")) threaded3d = ui0["threaded"] == "1";
@@ -1150,6 +1153,7 @@ int main(int argc, char** argv)
                 items.push_back({"Grand écran si le bas est noir", onOff(disp.AutoTop), [&](int, bool) { disp.AutoTop = !disp.AutoTop; bottomBlack.Reset(); display(); }});
                 items.push_back({"Filtre", std::string(filter ? "lissé" : "pixels nets"), [&](int, bool) { filter ^= 1; makeTexture(); saveUi(); }});
                 items.push_back({"Afficher les fps", onOff(showFps), [&](int, bool) { showFps = !showFps; saveUi(); }});
+                items.push_back({"Raccourcis de disposition", std::string(layoutKeys ? "activés" : "désactivés"), [&](int, bool) { layoutKeys = !layoutKeys; saveUi(); }});
                 items.push_back({"Retour", "", [&](int, bool act) { if (act) page = PageMain; }});
             }
             GfxClear(renderer);
@@ -1313,7 +1317,7 @@ int main(int argc, char** argv)
                         slot = b == 14 ? std::min(slot + 1, 4) : std::max(slot - 1, 1);
                         feedback(230, 200, 40, slot);
                     }
-                    else if (b == 13 || b == 11)
+                    else if ((b == 13 || b == 11) && layoutKeys)
                     {
                         // up: next layout, MINUS: swap the screens (hybrid: which one is big). Not down: ZL + ZR + down
                         // opens the Tesla/Ultrahand overlay menu on many consoles
